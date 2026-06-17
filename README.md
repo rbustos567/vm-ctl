@@ -13,6 +13,17 @@ A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrat
 
 ----------------------
 
+## Directory Structure
+
+```text
+vm-ctl/
+├── .gitignore       # Keeps storage images and temporary sockets out of source control
+├── README.md        # Project documentation
+├── install.sh       # Automated installer
+└── vm-ctl.sh        # The VM manager script
+```
+----------------------
+
 ## Quick Start
 
 ```text
@@ -58,14 +69,7 @@ vm-ctl status
 
 10. Gracefully powerdown your instance
 vm-ctl stop --name alpine-lab
-
-## Directory Structure
-
-```text
-vm-ctl/
-├── .gitignore       # Keeps storage images and temporary sockets out of source control
-├── README.md        # Project documentation
-├── install.sh       # Automated installer
-└── vm-ctl.sh        # The VM manager script
-
+```
 ----------------------
+
+
