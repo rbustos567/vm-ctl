@@ -30,7 +30,7 @@ vm-ctl/
 1. Installation
 Clone the repository and run installer script with root privileges to satisfy host layout requirements:
 
-git clone [https://github.com/your-username/vm-ctl.git](https://github.com/your-username/vm-ctl.git)
+git clone git@github.com:rbustos567/vm-ctl.git
 cd vm-ctl
 sudo ./install.sh
 
