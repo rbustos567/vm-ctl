@@ -4,7 +4,7 @@ A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrat
 
 ---
 
-## 🚀 Features
+## Features
 
 * **Headless Infrastructure Context:** Optimized to start, manage, and audit lightweight VMs through serial socket abstraction and terminal redirection (`socat`).
 * **KVM Native Performance:** Leverages direct hardware acceleration (`-enable-kvm`) for near-metal performance on ARM64 architectures.
