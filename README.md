@@ -24,7 +24,7 @@ vm-ctl/
 
 ----------------------
 
-## Quick Start
+# Quick Start
 
 1. Installation
 Clone the repository and run installer script with root privileges to satisfy host layout requirements:
