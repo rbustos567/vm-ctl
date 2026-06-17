@@ -34,24 +34,25 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # ==============================================================================
-# ACTION: STATUS (Scans storage inventory and runtime sockets)
+# ACTION: STATUS (Scans storage inventory, runtime sockets & disk paths)
 # ==============================================================================
 if [ "$ACTION" == "status" ]; then
-    echo "======================================================================"
-    echo "                 QEMU/KVM Virtual Machine Inventory                   "
-    echo "======================================================================"
+    echo "========================================================================================================="
+    echo "                                   QEMU/KVM Virtual Machine Inventory                                    "
+    echo "========================================================================================================="
     
     STORAGE_DIR="./storage"
     
     # Check if storage directory exists or contains any qcow2 images
     if [ ! -d "$STORAGE_DIR" ] || [ -z "$(ls ${STORAGE_DIR}/*.qcow2 2>/dev/null)" ]; then
         echo "No virtual machines have been created yet (no disks found in $STORAGE_DIR)."
-        echo "======================================================================"
+        echo "========================================================================================================="
         exit 0
     fi
 
-    printf "%-25s %-12s %-10s %-15s\n" "VM NAME" "STATUS" "PID" "RESOURCES"
-    echo "----------------------------------------------------------------------"
+    # Configured column widths: Name (22s), Status (12s), PID (10s), Resources (12s), Disk Path (leftover)
+    printf "%-22s %-12s %-10s %-12s %-30s\n" "VM NAME" "STATUS" "PID" "RESOURCES" "DISK PATH"
+    echo "--------------------------------------------------------------------------------------------------------="
     
     # Iterate through all configured virtual disks in our inventory
     for disk in "${STORAGE_DIR}"/*.qcow2; do
@@ -63,17 +64,17 @@ if [ "$ACTION" == "status" ]; then
 
         if [ -n "$pid" ] && [ -S "$QMP_SOCKET" ]; then
             # The VM has an active process and control socket
-            printf "%-25s \e[32m%-12s\e[0m %-10s %-15s\n" "$name" "RUNNING" "$pid" "Active"
+            printf "%-22s \e[32m%-12s\e[0m %-10s %-12s %-30s\n" "$name" "RUNNING" "$pid" "Active" "$disk"
         else
             # The process is dead, but let's check for left-over/stale sockets to clean up
             if [ -S "$QMP_SOCKET" ] || [ -S "/tmp/monitor-${name}.sock" ]; then
                 rm -f "/tmp/qmp-${name}.sock" "/tmp/monitor-${name}.sock"
             fi
             # The VM is registered in storage but not actively executing
-            printf "%-25s \e[31m%-12s\e[0m %-10s %-15s\n" "$name" "STOPPED" "OFF" "Disk Staged"
+            printf "%-22s \e[31m%-12s\e[0m %-10s %-12s %-30s\n" "$name" "STOPPED" "OFF" "Disk Staged" "$disk"
         fi
     done
-    echo "======================================================================"
+    echo "========================================================================================================="
     exit 0
 fi
 
