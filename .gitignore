@@ -1,0 +1,10 @@
+# Ignore local runtime data and VM storage
+storage/
+isos/
+
+# Ignore temporary runtime serial sockets
+*.sock
+
+# Ignore editor fallback and temporary swap files
+*.swp
+*~
