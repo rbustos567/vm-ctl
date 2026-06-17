@@ -22,6 +22,8 @@ vm-ctl/
 ├── install.sh       # Automated installer
 └── vm-ctl.sh        # The VM manager script
 
+----------------------
+
 ## Quick Start
 
 1. Installation
