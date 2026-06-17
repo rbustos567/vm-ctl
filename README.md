@@ -2,7 +2,7 @@
 
 A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrator framework written in Bash. Designed specifically for managing ARM64 and x86_64 virtual machines on single-board computers (like the Orange Pi 6 Plus) and edge environments without the overhead of heavy virtualization management daemons.
 
----
+---------------------
 
 ## Features
 
@@ -11,9 +11,9 @@ A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrat
 * **Dynamic Resource Allocation:** Scale CPU cores and RAM configurations on the fly between VM boots without modifying the underlying storage.
 * **Automated Installation Lifecycle:** Includes a production-ready `install.sh` that validates binary dependencies, ensures UEFI compliance, and sets up a global binary execution context.
 
----
+----------------------
 
-## 📦 Directory Structure
+## Directory Structure
 
 ```text
 vm-ctl/
