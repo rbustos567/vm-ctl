@@ -32,6 +32,7 @@ Clone the repository and run installer script with root privileges to satisfy ho
 
 git clone git@github.com:rbustos567/vm-ctl.git
 cd vm-ctl
+chmod +x install.sh
 sudo ./install.sh
 
 2. Prepare Storage & Boot Media
