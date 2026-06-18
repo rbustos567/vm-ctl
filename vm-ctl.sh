@@ -12,7 +12,7 @@ ISO_IMG=""
 SNAPSHOT=false
 
 # --- Parse Command Line Arguments ---
-if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect" ]]; then
+if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect" || "$1" == "destroy" ]]; then
     ACTION="$1"
     shift
 else
@@ -121,6 +121,44 @@ if [ "$ACTION" == "connect" ]; then
     
     echo -e "\n----------------------------------------------------------------------"
     echo "Disconnected from VM: $VM_NAME console stream."
+    exit 0
+fi
+
+# ==============================================================================
+# ACTION: DESTROY (Safely purges VM disk, processes, and runtime sockets)
+# ==============================================================================
+if [ "$ACTION" == "destroy" ]; then
+    # 1. Block destruction if the VM is currently executing
+    pid=$(pgrep -f "name $VM_NAME" | head -n 1)
+    if [ -n "$pid" ]; then
+        echo "ERROR: VM '$VM_NAME' is currently RUNNING (PID: $pid)."
+        echo "Please stop the virtual machine before destroying it: vm-ctl stop --name $VM_NAME"
+        exit 1
+    fi
+
+    if [ ! -f "$DISK_IMG" ]; then
+        echo "ERROR: No staged disk found for '$VM_NAME' at $DISK_IMG"
+        exit 1
+    fi
+
+    # 2. Interactive safety guardrail
+    echo -e "\e[31m⚠️  WARNING: You are about to permanently DELETE the VM '$VM_NAME' and all its data.\e[0m"
+    read -p "Are you absolutely sure you want to proceed? (type 'yes' to confirm): " CONFIRM
+    
+    if [ "$CONFIRM" != "yes" ]; then
+        echo "Destruction aborted. Your virtual machine remains intact."
+        exit 0
+    fi
+
+    echo "Purging resources for VM: $VM_NAME..."
+    
+    # 3. Clean up any leftover active or stale sockets
+    rm -f "$QMP_SOCKET" "$MON_SOCKET" "/tmp/serial-${VM_NAME}.sock"
+    
+    # 4. Delete the physical backing storage image safely
+    rm -f "$DISK_IMG"
+    
+    echo -e "\e[32m✔ Success:\e[0m Virtual machine '$VM_NAME' and its storage assets have been completely destroyed."
     exit 0
 fi
 
