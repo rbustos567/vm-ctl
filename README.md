@@ -21,6 +21,8 @@ vm-ctl/
 ├── README.md        # Project documentation
 ├── install.sh       # Automated installer
 └── vm-ctl.sh        # The VM manager script
+└── isos/            # Stores linux ISOs
+└── images/          # Stores disks from existing VMs
 ```
 ----------------------
 
