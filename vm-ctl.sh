@@ -12,11 +12,11 @@ ISO_IMG=""
 SNAPSHOT=false
 
 # --- Parse Command Line Arguments ---
-if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" ]]; then
+if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect" ]]; then
     ACTION="$1"
     shift
 else
-    echo "Usage: $0 {start|stop|status} [options]"
+    echo "Usage: $0 {start|stop|status|connect} [options]"
     echo "Options: --name NAME | --ram MB | --cpus INT | --iso PATH_TO_ISO | --snapshot"
     exit 1
 fi
@@ -52,7 +52,7 @@ if [ "$ACTION" == "status" ]; then
 
     # Configured column widths: Name (22s), Status (12s), PID (10s), Resources (12s), Disk Path (leftover)
     printf "%-22s %-12s %-10s %-12s %-30s\n" "VM NAME" "STATUS" "PID" "RESOURCES" "DISK PATH"
-    echo "--------------------------------------------------------------------------------------------------------="
+    echo "---------------------------------------------------------------------------------------------------------"
     
     # Iterate through all configured virtual disks in our inventory
     for disk in "${STORAGE_DIR}"/*.qcow2; do
@@ -78,17 +78,51 @@ if [ "$ACTION" == "status" ]; then
     exit 0
 fi
 
-# --- Enforce Mandatory VM Name for START and STOP actions ---
-if [ -z "$VM_NAME" ]; then
-    echo "ERROR: The --name parameter is mandatory for '$ACTION' action."
-    echo "Example: vm-ctl $ACTION --name alpine-server"
-    exit 1
+# --- Enforce Mandatory VM Name for START, STOP and CONNECT actions ---
+if [[ "$ACTION" == "start" || "$ACTION" == "stop" || "$ACTION" == "connect" ]]; then
+    if [ -z "$VM_NAME" ]; then
+        echo "ERROR: The --name parameter is mandatory for '$ACTION' action."
+        echo "Example: vm-ctl $ACTION --name alpine-server"
+        exit 1
+    fi
 fi
 
 # --- Dynamically Resolve Operational Routes based on VM_NAME ---
 DISK_IMG="./storage/${VM_NAME}.qcow2"
 QMP_SOCKET="/tmp/qmp-${VM_NAME}.sock"
 MON_SOCKET="/tmp/monitor-${VM_NAME}.sock"
+SERIAL_SOCKET="/tmp/serial-${VM_NAME}.sock"
+
+# ==============================================================================
+# ACTION: CONNECT (Attaches to the VM Serial Console via socat)
+# ==============================================================================
+if [ "$ACTION" == "connect" ]; then
+    # 1. Check if the runtime control socket and process exist
+    pid=$(pgrep -f "name $VM_NAME" | head -n 1)
+    if [ -z "$pid" ] || [ ! -S "$QMP_SOCKET" ]; then
+        echo "ERROR: VM '$VM_NAME' is not running."
+        echo "Please start it first using: vm-ctl start --name $VM_NAME"
+        exit 1
+    fi
+
+    # 2. Verify that the serial communication socket is ready
+    if [ ! -S "$SERIAL_SOCKET" ]; then
+        echo "ERROR: Serial interface socket not found at $SERIAL_SOCKET"
+        exit 1
+    fi
+
+    echo "Connecting to serial console of VM: $VM_NAME..."
+    echo "Escape character is 'Ctrl + O' (returns control back to host)"
+    echo "----------------------------------------------------------------------"
+    sleep 1
+
+    # Execute interactive session handover
+    socat -,raw,echo=0 UNIX-CONNECT:"$SERIAL_SOCKET"
+    
+    echo -e "\n----------------------------------------------------------------------"
+    echo "Disconnected from VM: $VM_NAME console stream."
+    exit 0
+fi
 
 # ==============================================================================
 # ACTION: STOP
@@ -135,7 +169,8 @@ fi
 
 if [ ! -f "$DISK_IMG" ]; then
     echo "ERROR: Storage disk image not found at target location: $DISK_IMG"
-    echo "Please create the qcow2 image first using: qemu-img create -f qcow2 $DISK_IMG 20G"
+    echo "Please create the qcow2 image first using:"
+    echo "  qemu-img create -f qcow2 $DISK_IMG 20G"
     exit 1
 fi
 
@@ -174,7 +209,7 @@ QEMU_ARGS=(
     -display none
     
     # Virtual serial port configuration
-    -serial "unix:/tmp/serial-${VM_NAME}.sock,server,nowait"
+    -serial "unix:$SERIAL_SOCKET,server,nowait"
     
     -daemonize
 )
@@ -200,7 +235,7 @@ qemu-system-aarch64 "${QEMU_ARGS[@]}"
 if [ $? -eq 0 ]; then
     echo "VM '$VM_NAME' successfully initialized with KVM acceleration."
     echo "Control socket exposed at: $QMP_SOCKET"
-    echo "Connect to console via: socat -,raw,echo=0 UNIX-CONNECT:/tmp/serial-${VM_NAME}.sock"
+    echo "Connect to console via: vm-ctl connect --name $VM_NAME"
 else
     echo "ERROR: QEMU AArch64 process failed to initialize properly."
 fi
