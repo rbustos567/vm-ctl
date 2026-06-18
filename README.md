@@ -1,6 +1,6 @@
 # vm-ctl
 
-A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrator framework written in Bash. Designed specifically for managing ARM64 and x86_64 virtual machines on single-board computers (like the Orange Pi 6 Plus) and edge environments without the overhead of heavy virtualization management daemons.
+A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrator framework written in Bash. Designed specifically for managing ARM64 virtual machines on single-board computers (like the Orange Pi 6 Plus) and edge environments without the overhead of heavy virtualization management daemons.
 
 ---------------------
 
@@ -49,7 +49,7 @@ vm-ctl start --name alpine-lab --ram 1024 --cpus 2 --iso ./isos/alpine-virt.iso
 4. Connect via Serial Console
 Interact with the native Linux kernel console socket stream securely:
 
-socat -,raw,echo=0 UNIX-CONNECT:/tmp/serial-alpine-lab.sock
+vm-ctl connect --name alpine-lab
 
 5. Follow instructions to install alpine OS
 
@@ -61,9 +61,9 @@ vm-ctl stop --name alpine-lab
 vm-ctl start --name alpine-lab --ram 1024 --cpus 2
 
 8. Connect via Serial Console
-Interact with the native Linux kernel console socket stream securely:
+Interact again with the native Linux kernel console socket stream securely:
 
-socat -,raw,echo=0 UNIX-CONNECT:/tmp/serial-alpine-lab.sock
+vm-ctl connect --name alpine-lab
 
 9. Check running instances status:
 vm-ctl status
