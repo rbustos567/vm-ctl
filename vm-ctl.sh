@@ -60,7 +60,7 @@ if [ "$ACTION" == "status" ]; then
         name=$(basename "$disk" .qcow2)
         
         QMP_SOCKET="/tmp/qmp-${name}.sock"
-        pid=$(pgrep -f "name $name" | head -n 1)
+        pid=$(pgrep -f "qemu-system-aarch64.*-name $name" | head -n 1)
 
         if [ -n "$pid" ] && [ -S "$QMP_SOCKET" ]; then
             # The VM has an active process and control socket
@@ -98,7 +98,7 @@ SERIAL_SOCKET="/tmp/serial-${VM_NAME}.sock"
 # ==============================================================================
 if [ "$ACTION" == "connect" ]; then
     # 1. Check if the runtime control socket and process exist
-    pid=$(pgrep -f "name $VM_NAME" | head -n 1)
+    pid=$(pgrep -f "qemu-system-aarch64.*-name $VM_NAME" | head -n 1)
     if [ -z "$pid" ] || [ ! -S "$QMP_SOCKET" ]; then
         echo "ERROR: VM '$VM_NAME' is not running."
         echo "Please start it first using: vm-ctl start --name $VM_NAME"
@@ -129,7 +129,7 @@ fi
 # ==============================================================================
 if [ "$ACTION" == "destroy" ]; then
     # 1. Block destruction if the VM is currently executing
-    pid=$(pgrep -f "name $VM_NAME" | head -n 1)
+    pid=$(pgrep -f "qemu-system-aarch64.*-name $VM_NAME" | head -n 1)
     if [ -n "$pid" ]; then
         echo "ERROR: VM '$VM_NAME' is currently RUNNING (PID: $pid)."
         echo "Please stop the virtual machine before destroying it: vm-ctl stop --name $VM_NAME"
