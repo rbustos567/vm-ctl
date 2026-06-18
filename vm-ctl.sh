@@ -16,7 +16,7 @@ if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect"
     ACTION="$1"
     shift
 else
-    echo "Usage: $0 {start|stop|status|connect} [options]"
+    echo "Usage: $0 {start|stop|status|connect|destroy} [options]"
     echo "Options: --name NAME | --ram MB | --cpus INT | --iso PATH_TO_ISO | --snapshot"
     exit 1
 fi
