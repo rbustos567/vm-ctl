@@ -117,7 +117,7 @@ if [ "$ACTION" == "connect" ]; then
     sleep 1
 
     # Execute interactive session handover
-    socat -,raw,echo=0 UNIX-CONNECT:"$SERIAL_SOCKET"
+    socat -,raw,echo=0,escape=0x0f UNIX-CONNECT:"$SERIAL_SOCKET"
     
     echo -e "\n----------------------------------------------------------------------"
     echo "Disconnected from VM: $VM_NAME console stream."
