@@ -26,6 +26,47 @@ vm-ctl/
 ```
 ----------------------
 
+## Quick Start: Deploying a Cloud Image (Recommended)
+
+Instead of installing an OS manually via an ISO, the fastest way to spin up a lightweight, production-ready virtual machine is using official **Cloud Images** (`.qcow2`). 
+
+Since Cloud Images are secure by default and do not come with a pre-configured password, we will use `libguestfs-tools` to inject our credentials and disable initial metadata timeouts before the first boot.
+
+### Prerequisites
+
+Ensure you have the disk customization utilities installed on your host system:
+```bash
+sudo apt update && sudo apt install -y libguestfs-tools
+```
+
+```text
+1. Download the official ARM64 Cloud Image (Debian 12)
+curl -L -o ./storage/debian-test.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2
+
+2. Provision Root Credentials (Natively injects password into the root partition)
+./vm-ctl.sh set --name debian-test --root-pass "YourSecurePassword"
+
+3. Disable cloud-init (Prevents dynamic systemd metadata block timeouts)
+./vm-ctl.sh set --name debian-test --disable-cloud-init
+
+4. Launch virtual machine
+vm-ctl start --name debian-test --ram 1024 --cpus 1
+
+5. Connect to the interactive Serial Console of VM
+vm-ctl connect --name debian-test
+
+6. Login to VM using root and the newly set root password: YourSecurePassword
+
+7. To quit from terminal session of VM press: Ctrl+O
+
+8. Stop the VM:
+vm-ctl stop --name debian-test
+
+9. Check status of your VM:
+vm-ctl status
+```
+--------------------------------
+
 ## Quick Start creating VM through a ISO
 
 ```text
@@ -69,42 +110,3 @@ vm-ctl stop --name alpine-lab
 ```
 ----------------------
 
-## Quick Start: Deploying a Cloud Image (Recommended)
-
-Instead of installing an OS manually via an ISO, the fastest way to spin up a lightweight, production-ready virtual machine is using official **Cloud Images** (`.qcow2`). 
-
-Since Cloud Images are secure by default and do not come with a pre-configured password, we will use `libguestfs-tools` to inject our credentials and disable initial metadata timeouts before the first boot.
-
-### Prerequisites
-
-Ensure you have the disk customization utilities installed on your host system:
-```bash
-sudo apt update && sudo apt install -y libguestfs-tools
-```
-
-```text
-1. Download the official ARM64 Cloud Image (Debian 12)
-curl -L -o ./storage/debian-test.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2
-
-2. Provision Root Credentials (Natively injects password into the root partition)
-./vm-ctl.sh set --name debian-test --root-pass "YourSecurePassword"
-
-3. Disable cloud-init (Prevents dynamic systemd metadata block timeouts)
-./vm-ctl.sh set --name debian-test --disable-cloud-init
-
-4. Launch virtual machine
-vm-ctl start --name debian-test --ram 1024 --cpus 1
-
-5. Connect to the interactive Serial Console of VM
-vm-ctl connect --name debian-test
-
-6. Login to VM using root and the newly set root password: YourSecurePassword
-
-7. To quit from terminal session of VM press: Ctrl+O
-
-8. Stop the VM:
-vm-ctl stop --name debian-test
-
-9. Check status of your VM:
-vm-ctl status
-```
