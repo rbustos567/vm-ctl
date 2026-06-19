@@ -81,6 +81,8 @@ Ensure you have the disk customization utilities installed on your host system:
 ```bash
 sudo apt update && sudo apt install -y libguestfs-tools
 ```
+
+```text
 1. Download the official ARM64 Cloud Image (Debian 12)
 curl -L -o ./storage/debian-test.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2
 
@@ -94,4 +96,4 @@ vm-ctl start --name debian-test --ram 1024 --cpus 1
 
 4. Connect to the interactive Serial Console of VM
 vm-ctl connect --name debian-test
-
+```
