@@ -97,4 +97,6 @@ vm-ctl start --name debian-test --ram 1024 --cpus 1
 
 5. Connect to the interactive Serial Console of VM
 vm-ctl connect --name debian-test
+
+6. Login to VM using root and the newly set root password: YourSecurePassword
 ```
