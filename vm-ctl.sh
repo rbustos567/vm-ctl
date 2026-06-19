@@ -11,16 +11,149 @@ CPUS="2"
 ISO_IMG=""
 SNAPSHOT=false
 
+# ==============================================================================
+# DECOUPLED TASK FUNCTIONS FOR PROVISIONING (Opeartes via QEMU-NBD)
+# ==============================================================================
+
+# TASK FUNCTION: INJECT ROOT PASSWORD
+set_root_password() {
+    local disk_path="$1"
+    local password="$2"
+    local mount_point="/mnt/vm_ctl_tmp"
+
+    echo "[*] Preparing host environment for password injection..."
+    modprobe nbd max_part=8 2>/dev/null
+    local nbd_dev="/dev/nbd0"
+    
+    qemu-nbd --connect="${nbd_dev}" "${disk_path}"
+    sleep 1
+
+    local root_partition=$(lsblk -lnp -o NAME,TYPE "${nbd_dev}" | awk '$2=="part" {print $1}' | tail -n 1)
+    if [ -z "$root_partition" ]; then
+        echo "[!] Error: No partitions detected inside the virtual disk."
+        qemu-nbd --disconnect "${nbd_dev}"
+        return 1
+    fi
+
+    echo "[*] Mounting root partition (${root_partition}) to ${mount_point}..."
+    mkdir -p "${mount_point}"
+    mount "${root_partition}" "${mount_point}"
+
+    echo "[*] Injecting root password..."
+    echo "root:${password}" | chroot "${mount_point}" chpasswd
+
+    echo "[*] Synchronizing filesystem changes and releasing block device..."
+    sync
+    umount "${mount_point}"
+    qemu-nbd --disconnect "${nbd_dev}"
+    rmdir "${mount_point}"
+
+    echo "[+] Root password set successfully!"
+}
+
+# TASK FUNCTION: DISABLE CLOUD-INIT
+disable_cloud_init() {
+    local disk_path="$1"
+    local mount_point="/mnt/vm_ctl_tmp"
+
+    echo "[*] Preparing host environment for cloud-init deactivation..."
+    modprobe nbd max_part=8 2>/dev/null
+    local nbd_dev="/dev/nbd0"
+    
+    qemu-nbd --connect="${nbd_dev}" "${disk_path}"
+    sleep 1
+
+    local root_partition=$(lsblk -lnp -o NAME,TYPE "${nbd_dev}" | awk '$2=="part" {print $1}' | tail -n 1)
+    if [ -z "$root_partition" ]; then
+        echo "[!] Error: No partitions detected inside the virtual disk."
+        qemu-nbd --disconnect "${nbd_dev}"
+        return 1
+    fi
+
+    echo "[*] Mounting root partition (${root_partition}) to ${mount_point}..."
+    mkdir -p "${mount_point}"
+    mount "${root_partition}" "${mount_point}"
+
+    echo "[*] Disabling cloud-init infrastructure services..."
+    chroot "${mount_point}" systemctl mask cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service 2>/dev/null
+    touch "${mount_point}/etc/cloud/cloud-init.disabled" 2>/dev/null
+
+    echo "[*] Synchronizing filesystem changes and releasing block device..."
+    sync
+    umount "${mount_point}"
+    qemu-nbd --disconnect "${nbd_dev}"
+    rmdir "${mount_point}"
+
+    echo "[+] cloud-init disabled successfully!"
+}
+
 # --- Parse Command Line Arguments ---
-if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect" || "$1" == "destroy" ]]; then
+if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect" || "$1" == "destroy" || "$1" == "set" ]]; then
     ACTION="$1"
     shift
 else
-    echo "Usage: $0 {start|stop|status|connect|destroy} [options]"
-    echo "Options: --name NAME | --ram MB | --cpus INT | --iso PATH_TO_ISO | --snapshot"
+    echo "Usage: $0 {start|stop|status|connect|destroy|set} [options]"
+    echo "Options for lifecycle: --name NAME | --ram MB | --cpus INT | --iso PATH_TO_ISO | --snapshot"
+    echo "Options for set:       --name NAME {--root-pass PASSWORD | --disable-cloud-init}"
     exit 1
 fi
 
+# ==============================================================================
+# COMMAND PROCESSING: SUB-PARSER FOR "SET" ACTION
+# ==============================================================================
+if [ "$ACTION" == "set" ]; then
+    ROOT_PASSWORD=""
+    DISABLE_CLOUD_INIT=false
+    OP_COUNT=0
+
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            --name)               VM_NAME="$2"; shift 2 ;;
+            --root-pass)          ROOT_PASSWORD="$2"; OP_COUNT=$((OP_COUNT + 1)); shift 2 ;;
+            --disable-cloud-init) DISABLE_CLOUD_INIT=true; OP_COUNT=$((OP_COUNT + 1)); shift 1 ;;
+            *) echo "[!] Error: Unknown option $1 for set command."; exit 1 ;;
+        esac
+    done
+
+    # Strict Validations for Target Operations
+    if [ -z "$VM_NAME" ]; then
+        echo "[!] Error: --name is required."
+        exit 1
+    fi
+
+    if [ "$OP_COUNT" -eq 0 ]; then
+        echo "[!] Error: No operation flag specified. You must provide either --root-pass or --disable-cloud-init."
+        exit 1
+    fi
+
+    if [ "$OP_COUNT" -gt 1 ]; then
+        echo "[!] Error: Multiple operations detected. Please run only one configuration change at a time."
+        exit 1
+    fi
+
+    DISK_IMG="./storage/${VM_NAME}.qcow2"
+    if [ ! -f "$DISK_IMG" ]; then
+        echo "[!] Error: Virtual disk not found at $DISK_IMG"
+        exit 1
+    fi
+
+    # Check execution profile context to preserve disk integrity
+    if pgrep -f "qemu-system-aarch64.*-name $VM_NAME" > /dev/null; then
+        echo "[!] Error: VM '${VM_NAME}' is currently running. Please stop it before modifying the disk."
+        exit 1
+    fi
+
+    # Dispatch to specific tasks
+    if [ -n "$ROOT_PASSWORD" ]; then
+        set_root_password "$DISK_IMG" "$ROOT_PASSWORD"
+    elif [ "$DISABLE_CLOUD_INIT" = true ]; then
+        disable_cloud_init "$DISK_IMG"
+    fi
+
+    exit 0
+fi
+
+# --- Standard Lifecycle Argument Processing ---
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --name)     VM_NAME="$2"; shift ;;
@@ -34,7 +167,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # ==============================================================================
-# ACTION: STATUS (Scans storage inventory, runtime sockets & disk paths)
+# ACTION: STATUS
 # ==============================================================================
 if [ "$ACTION" == "status" ]; then
     echo "========================================================================================================="
@@ -43,34 +176,27 @@ if [ "$ACTION" == "status" ]; then
     
     STORAGE_DIR="./storage"
     
-    # Check if storage directory exists or contains any qcow2 images
     if [ ! -d "$STORAGE_DIR" ] || [ -z "$(ls ${STORAGE_DIR}/*.qcow2 2>/dev/null)" ]; then
         echo "No virtual machines have been created yet (no disks found in $STORAGE_DIR)."
         echo "========================================================================================================="
         exit 0
     fi
 
-    # Configured column widths: Name (22s), Status (12s), PID (10s), Resources (12s), Disk Path (leftover)
     printf "%-22s %-12s %-10s %-12s %-30s\n" "VM NAME" "STATUS" "PID" "RESOURCES" "DISK PATH"
     echo "---------------------------------------------------------------------------------------------------------"
     
-    # Iterate through all configured virtual disks in our inventory
     for disk in "${STORAGE_DIR}"/*.qcow2; do
-        # Extract the VM name from the file name (e.g., ./storage/alpine.qcow2 -> alpine)
         name=$(basename "$disk" .qcow2)
         
         QMP_SOCKET="/tmp/qmp-${name}.sock"
         pid=$(pgrep -f "qemu-system-aarch64.*-name $name" | head -n 1)
 
         if [ -n "$pid" ] && [ -S "$QMP_SOCKET" ]; then
-            # The VM has an active process and control socket
             printf "%-22s \e[32m%-12s\e[0m %-10s %-12s %-30s\n" "$name" "RUNNING" "$pid" "Active" "$disk"
         else
-            # The process is dead, but let's check for left-over/stale sockets to clean up
             if [ -S "$QMP_SOCKET" ] || [ -S "/tmp/monitor-${name}.sock" ]; then
                 rm -f "/tmp/qmp-${name}.sock" "/tmp/monitor-${name}.sock"
             fi
-            # The VM is registered in storage but not actively executing
             printf "%-22s \e[31m%-12s\e[0m %-10s %-12s %-30s\n" "$name" "STOPPED" "OFF" "Disk Staged" "$disk"
         fi
     done
@@ -94,10 +220,9 @@ MON_SOCKET="/tmp/monitor-${VM_NAME}.sock"
 SERIAL_SOCKET="/tmp/serial-${VM_NAME}.sock"
 
 # ==============================================================================
-# ACTION: CONNECT (Attaches to the VM Serial Console via socat)
+# ACTION: CONNECT
 # ==============================================================================
 if [ "$ACTION" == "connect" ]; then
-    # 1. Check if the runtime control socket and process exist
     pid=$(pgrep -f "qemu-system-aarch64.*-name $VM_NAME" | head -n 1)
     if [ -z "$pid" ] || [ ! -S "$QMP_SOCKET" ]; then
         echo "ERROR: VM '$VM_NAME' is not running."
@@ -105,7 +230,6 @@ if [ "$ACTION" == "connect" ]; then
         exit 1
     fi
 
-    # 2. Verify that the serial communication socket is ready
     if [ ! -S "$SERIAL_SOCKET" ]; then
         echo "ERROR: Serial interface socket not found at $SERIAL_SOCKET"
         exit 1
@@ -116,7 +240,6 @@ if [ "$ACTION" == "connect" ]; then
     echo "----------------------------------------------------------------------"
     sleep 1
 
-    # Execute interactive session handover
     socat -,raw,echo=0,escape=0x0f UNIX-CONNECT:"$SERIAL_SOCKET"
     
     echo -e "\n----------------------------------------------------------------------"
@@ -125,10 +248,9 @@ if [ "$ACTION" == "connect" ]; then
 fi
 
 # ==============================================================================
-# ACTION: DESTROY (Safely purges VM disk, processes, and runtime sockets)
+# ACTION: DESTROY
 # ==============================================================================
 if [ "$ACTION" == "destroy" ]; then
-    # 1. Block destruction if the VM is currently executing
     pid=$(pgrep -f "qemu-system-aarch64.*-name $VM_NAME" | head -n 1)
     if [ -n "$pid" ]; then
         echo "ERROR: VM '$VM_NAME' is currently RUNNING (PID: $pid)."
@@ -141,7 +263,6 @@ if [ "$ACTION" == "destroy" ]; then
         exit 1
     fi
 
-    # 2. Interactive safety guardrail
     echo -e "\e[31m⚠️  WARNING: You are about to permanently DELETE the VM '$VM_NAME' and all its data.\e[0m"
     read -p "Are you absolutely sure you want to proceed? (type 'yes' to confirm): " CONFIRM
     
@@ -151,11 +272,7 @@ if [ "$ACTION" == "destroy" ]; then
     fi
 
     echo "Purging resources for VM: $VM_NAME..."
-    
-    # 3. Clean up any leftover active or stale sockets
     rm -f "$QMP_SOCKET" "$MON_SOCKET" "/tmp/serial-${VM_NAME}.sock"
-    
-    # 4. Delete the physical backing storage image safely
     rm -f "$DISK_IMG"
     
     echo -e "\e[32m✔ Success:\e[0m Virtual machine '$VM_NAME' and its storage assets have been completely destroyed."
@@ -212,14 +329,12 @@ if [ ! -f "$DISK_IMG" ]; then
     exit 1
 fi
 
-# Path to the standard AArch64 UEFI firmware on Debian/Ubuntu hosts
 UEFI_FW="/usr/share/AAVMF/AAVMF_CODE.fd"
 if [ ! -f "$UEFI_FW" ]; then
     echo "ERROR: UEFI firmware not found at $UEFI_FW. Run: sudo apt install qemu-efi-aarch64"
     exit 1
 fi
 
-# Base QEMU arguments
 QEMU_ARGS=(
     -enable-kvm
     -machine virt
@@ -227,32 +342,18 @@ QEMU_ARGS=(
     -m "$RAM"
     -smp "$CPUS"
     -cpu host
-    
-    # --- UEFI Firmware Mapping ---
     -drive "if=pflash,format=raw,readonly=on,file=$UEFI_FW"
-    
-    # --- Main Storage System ---
     -drive "file=$DISK_IMG,format=qcow2,if=virtio"
-    
-    # --- Networking Stack ---
     -netdev user,id=vnet0
     -device virtio-net-pci,netdev=vnet0
-    
-    # --- Instrumentation ---
     -qmp "unix:$QMP_SOCKET,server,nowait"
     -monitor "unix:$MON_SOCKET,server,nowait"
-    
-    # --- Headless Execution Context ---
     -vga none
     -display none
-    
-    # Virtual serial port configuration
     -serial "unix:$SERIAL_SOCKET,server,nowait"
-    
     -daemonize
 )
 
-# --- Conditional CD-ROM/ISO Mapping ---
 if [ -n "$ISO_IMG" ]; then
     if [ ! -f "$ISO_IMG" ]; then
         echo "ERROR: ISO image not found at $ISO_IMG"
