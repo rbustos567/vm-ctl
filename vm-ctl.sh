@@ -26,7 +26,7 @@ set_root_password() {
     local nbd_dev="/dev/nbd0"
     
     qemu-nbd --connect="${nbd_dev}" "${disk_path}"
-    sleep 1
+    sleep 2
 
     # Sort partitions by size in bytes (SIZE column) in descending order and pick the largest one
     local root_partition=$(lsblk -lnp -o NAME,TYPE,SIZE -b "${nbd_dev}" | awk '$2=="part" {print $1, $3}' | sort -k2 -nr | awk 'NR==1 {print $1}')
@@ -62,9 +62,10 @@ disable_cloud_init() {
     local nbd_dev="/dev/nbd0"
     
     qemu-nbd --connect="${nbd_dev}" "${disk_path}"
-    sleep 1
+    sleep 2
 
-    local root_partition=$(lsblk -lnp -o NAME,TYPE "${nbd_dev}" | awk '$2=="part" {print $1}' | tail -n 1)
+    # Sort partitions by size in bytes (SIZE column) in descending order and pick the largest one
+    local root_partition=$(lsblk -lnp -o NAME,TYPE,SIZE -b "${nbd_dev}" | awk '$2=="part" {print $1, $3}' | sort -k2 -nr | awk 'NR==1 {print $1}')
     if [ -z "$root_partition" ]; then
         echo "[!] Error: No partitions detected inside the virtual disk."
         qemu-nbd --disconnect "${nbd_dev}"
