@@ -26,7 +26,7 @@ vm-ctl/
 ```
 ----------------------
 
-## Quick Start
+## Quick Start creating VM through a ISO
 
 ```text
 1. Installation
@@ -68,5 +68,17 @@ vm-ctl status
 vm-ctl stop --name alpine-lab
 ```
 ----------------------
+
+## Quick Start: Deploying a Cloud Image (Recommended)
+
+Instead of installing an OS manually via an ISO, the fastest way to spin up a lightweight, production-ready virtual machine is using official **Cloud Images** (`.qcow2`). 
+
+Since Cloud Images are secure by default and do not come with a pre-configured password, we will use `libguestfs-tools` to inject our credentials and disable initial metadata timeouts before the first boot.
+
+### Prerequisites
+
+Ensure you have the disk customization utilities installed on your host system:
+```bash
+sudo apt update && sudo apt install -y libguestfs-tools
 
 
