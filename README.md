@@ -99,4 +99,12 @@ vm-ctl start --name debian-test --ram 1024 --cpus 1
 vm-ctl connect --name debian-test
 
 6. Login to VM using root and the newly set root password: YourSecurePassword
+
+7. To quit from terminal session of VM press: Ctrl + o
+
+8. Stop the VM:
+vm-ctl stop --name debian-test
+
+9. Check status of your VM:
+vm-ctl status
 ```
