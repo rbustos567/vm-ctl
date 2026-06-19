@@ -80,5 +80,18 @@ Since Cloud Images are secure by default and do not come with a pre-configured p
 Ensure you have the disk customization utilities installed on your host system:
 ```bash
 sudo apt update && sudo apt install -y libguestfs-tools
+```
+1. Download the official ARM64 Cloud Image (Debian 12)
+curl -L -o ./storage/debian-test.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2
 
+2. Provision Credentials & Network Optimization
+virt-customize -a ./storage/debian-test.qcow2 \
+  --root-password password:YourSecurePassword \
+  --run-command "systemctl disable cloud-init"
+
+3. Launch virtual machine
+vm-ctl start --name debian-test --ram 1024 --cpus 1
+
+4. Connect to the interactive Serial Console of VM
+vm-ctl connect --name debian-test
 
