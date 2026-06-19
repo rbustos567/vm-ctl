@@ -78,19 +78,8 @@ disable_cloud_init() {
 
     echo "[*] Neutralizing cloud-init infrastructure components..."
     
-    # 1. Mask the services (Standard systemd block)
+    # Mask the services (Standard systemd block)
     chroot "${mount_point}" systemctl mask cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service 2>/dev/null
-    
-    # 2. Tell the internal engine to stay disabled
-    touch "${mount_point}/etc/cloud/cloud-init.disabled" 2>/dev/null
-    
-    # 3. Disable the dynamic systemd generators (This stops it from bypassing the masks)
-    rm -f "${mount_point}/lib/systemd/system-generators/cloud-init-generator" 2>/dev/null
-    rm -f "${mount_point}/usr/lib/systemd/system-generators/cloud-init-generator" 2>/dev/null
-
-    # 4. Write a kernel cmdline override to completely bypass cloud-init initramfs detection
-    mkdir -p "${mount_point}/etc/cloud/cloud.cfg.d"
-    echo "cloud-init: '{config: {disabled: true}}'" > "${mount_point}/etc/cloud/cloud.cfg.d/99-disable.cfg"
 
     echo "[*] Synchronizing filesystem changes and releasing block device..."
     sync
