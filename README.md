@@ -110,3 +110,11 @@ vm-ctl stop --name alpine-lab
 ```
 ----------------------
 
+> [!NOTE]
+> **Filesystem & Host Kernel Restrictions (ARM64 / SBC Focus)**
+>
+> This script relies on `qemu-nbd` and native host mount capabilities to inject credentials and disable services. 
+> * **Supported Filesystems:** Tested and fully operational on Cloud Images using **`ext4`** (e.g., official Debian, Ubuntu, and Alpine images).
+> * **XFS Limitations:** Enterprise Linux distributions (such as AlmaLinux, Rocky Linux, or Fedora Cloud) format their root partitions using **`XFS`** by default. If your host system is an ARM64 Single Board Computer (like the Orange Pi 6 Plus running custom vendor kernels such as `6.1.x-cix`), the host kernel may lack native XFS compilation or module support. 
+> * **Workaround:** If running on a stripped-down kernel, please use the **`ext4`** generic cloud image variants provided by the respective distributions (e.g., AlmaLinux GenericCloud-vfat-ext4 flavor) to allow seamless native partitioning manipulation.
+
