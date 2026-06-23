@@ -49,21 +49,29 @@ curl -L -o ./storage/debian-test.qcow2 https://cloud.debian.org/images/cloud/boo
 3. Disable cloud-init (Prevents dynamic systemd metadata block timeouts)
 ./vm-ctl.sh set --name debian-test --disable-cloud-init
 
-4. Launch virtual machine
+4. Inject Static IP Address Profile (Automatically detects the host uplink interface, hooks into the local hardware bridge vmctl-br, and maps the correct target guest interface dynamically)
+/vm-ctl.sh set --name debian-test --static-ip "192.168.1.24/24" --gateway "192.168.1.1" --dns "1.1.1.1"
+
+5. Launch virtual machine
 vm-ctl start --name debian-test --ram 1024 --cpus 1
 
-5. Connect to the interactive Serial Console of VM
+6. Verify Network Operations (Since the VM is connected to the network bridge, it shares your local network segment. You can ping or SSH directly into it from the host or any device on your LAN)
+ping 192.168.1.24
+ssh root@192.168.1.24
+
+7. Connect to the interactive Serial Console of VM
 vm-ctl connect --name debian-test
 
-6. Login to VM using root and the newly set root password: YourSecurePassword
+8. Login to VM using root and the newly set root password: YourSecurePassword
 
-7. To quit from terminal session of VM press: Ctrl+O
+9. To quit from terminal session of VM press: Ctrl+O
 
-8. Stop the VM:
+10. Check status of your VM:
+vm-ctl status
+
+11. Stop the VM:
 vm-ctl stop --name debian-test
 
-9. Check status of your VM:
-vm-ctl status
 ```
 --------------------------------
 
