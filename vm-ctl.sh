@@ -12,8 +12,67 @@ ISO_IMG=""
 SNAPSHOT=false
 
 # ==============================================================================
-# DECOUPLED TASK FUNCTIONS FOR PROVISIONING (Opeartes via QEMU-NBD)
+# DECOUPLED TASK FUNCTIONS FOR PROVISIONING (Operates via QEMU-NBD)
 # ==============================================================================
+
+# --- HOST INFRASTRUCTURE VALIDATION ---
+# Dynamically verifies, provisions, and configures the host-level network bridge
+# to establish seamless Layer 2 routing between the host machine and QEMU guests.
+ensure_host_bridge() {
+    local bridge_name="vm-ctl-br"
+    local phys_interface
+    
+    # 1. DYNAMIC UPLINK INTERFACE DETECTION
+    # Inspects the host kernel routing table to identify the active interface 
+    # managing the default gateway path to the internet.
+    phys_interface=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
+    
+    if [ -z "$phys_interface" ]; then
+        echo "[ERROR] No active internet-facing network interface detected on the host."
+        return 1
+    fi
+
+    # 2. RUNTIME INFRASTRUCTURE EXISTENCE CHECK
+    # Reuses the bridge if it is already present in memory to maintain system state efficiency.
+    if ip link show "$bridge_name" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "[*] Active host uplink discovered: ${phys_interface}"
+    echo "[*] Initializing dedicated network infrastructure: ${bridge_name}..."
+
+    # 3. PRIVILEGE ELEVATION VALIDATION
+    # Assures the calling context has administrative capabilities or sudo availability.
+    if [ "$EUID" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+        echo "[ERROR] Root privileges or sudo required to provision the host network layer."
+        return 1
+    fi
+
+    local sudo_cmd=""
+    [ "$EUID" -ne 0 ] && sudo_cmd="sudo"
+
+    # 4. ATOMIC NETWORK BRIDGE PROVISIONING
+    # Instantiates the software switch and enslaves the physical uplink card.
+    $sudo_cmd ip link add name "$bridge_name" type bridge
+    $sudo_cmd ip link set "$phys_interface" master "$bridge_name"
+    $sudo_cmd ip link set "$bridge_name" up
+    $sudo_cmd ip link set "$phys_interface" up
+    
+    # 5. IP FOOTPRINT MIGRATION
+    # Instructs DHCP client to bind the existing network lease context to the new bridge wrapper.
+    echo "[*] Migrating host IP footprints via DHCP..."
+    $sudo_cmd dhclient "$bridge_name"
+
+    # 6. QEMU HELPER POLICY INJECTION
+    # Authorizes the custom bridge within QEMU execution guidelines to prevent runtime drops.
+    if [ ! -f /etc/qemu/bridge.conf ] || ! grep -q "allow $bridge_name" /etc/qemu/bridge.conf; then
+        $sudo_cmd mkdir -p /etc/qemu
+        echo "allow $bridge_name" | $sudo_cmd tee -a /etc/qemu/bridge.conf >/dev/null
+        $sudo_cmd chmod 0644 /etc/qemu/bridge.conf
+    fi
+    
+    echo "[SUCCESS] Host network runtime patched. Bridge ${bridge_name} is active on ${phys_interface}."
+}
 
 # TASK FUNCTION: INJECT ROOT PASSWORD
 set_root_password() {
@@ -90,6 +149,148 @@ disable_cloud_init() {
     echo "[+] cloud-init disabled successfully!"
 }
 
+# TASK FUNCTION: INJECT STATIC NETWORK CONFIGURATION (OFFLINE MODE)
+set_static_ip() {
+    local target_vm_name="$1"
+    local requested_ip="$2"
+    local requested_gateway="$3"
+    local requested_dns="$4"
+    local mount_point="/mnt/vm_ctl_tmp"
+
+    # Validate mandatory inputs
+    if [ -z "$target_vm_name" ] || [ -z "$requested_ip" ]; then
+        echo "[ERROR] Missing required parameters. Usage: set_static_ip <vm_name> <ip_address> [gateway] [dns]"
+        return 1
+    fi
+
+    # 1. Sanitize IP format: Append a /24 CIDR mask if the user omitted it
+    if [[ "$requested_ip" != */* ]]; then
+        echo "[*] No CIDR prefix specified. Appending /24 by default."
+        requested_ip="${requested_ip}/24"
+    fi
+
+    # 2. Smart Default: Fallback to Cloudflare DNS if none was specified
+    if [ -z "$requested_dns" ]; then
+        requested_dns="1.1.1.1"
+    fi
+
+    # 3. Smart Default: Infer the gateway (.1 of the subnet) if none was provided
+    if [ -z "$requested_gateway" ]; then
+        local raw_ip_address
+        raw_ip_address=$(echo "$requested_ip" | cut -d'/' -f1)
+        # Extract the first 3 octets and append .1
+        requested_gateway=$(echo "$raw_ip_address" | awk -F. '{print $1"."$2"."$3".1"}')
+        echo "[*] No gateway provided. Inferred network gateway: ${requested_gateway}"
+    fi
+
+    echo "[*] Injecting static network configuration into '${target_vm_name}':"
+    echo "    IP/CIDR: $requested_ip"
+    echo "    Gateway: $requested_gateway"
+    echo "    DNS    : $requested_dns"
+
+    # --- MULTI-DISTRO FEATURE DETECTION BASED ON FILESYSTEM LAYOUT ---
+
+    # Layout A: Netplan core (Common in Ubuntu and Netplan-enabled Cloud Images)
+    if [ -d "${mount_point}/etc/netplan" ]; then
+        echo "[*] Target layout detected: Netplan"
+        
+        # Generate a precise timestamp for the backup file (Format: YYYYMMDD_HHMMSS)
+        local timestamp
+        timestamp=$(date +"%Y%m%d_%H%M%S")
+
+        # Backup any existing .yaml files before purging them
+        for original_file in "${mount_point}/etc/netplan/"*.yaml; do
+            if [ -f "$original_file" ]; then
+                local backup_name="${original_file}.bak_${timestamp}"
+                echo "[*] Backing up original config: $(basename "$original_file") -> $(basename "$backup_name")"
+                cp "$original_file" "$backup_name"
+            fi
+        done
+        
+        # Clean up only the active configuration files, leaving our new backups safe
+        # (Since we append .bak_[timestamp], they won't match the *.yaml extension anymore)
+        rm -f "${mount_point}/etc/netplan/"*.yaml
+        
+        # Inject our definitive static configuration profile
+        cat <<EOF > "${mount_point}/etc/netplan/50-cloud-init.yaml"
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: no
+      addresses:
+        - ${requested_ip}
+      routes:
+        - to: default
+          via: ${requested_gateway}
+      nameservers:
+        addresses: [${requested_dns}]
+EOF
+        chmod 600 "${mount_point}/etc/netplan/50-cloud-init.yaml"
+        echo "[SUCCESS] Netplan static profile injected into 50-cloud-init.yaml."
+
+    # Layout B: Traditional Debian / Alpine Linux (ifupdown core)
+    elif [ -d "${mount_point}/etc/network" ]; then
+        echo "[*] Target layout detected: ifupdown (Debian/Alpine style)"
+        
+        # Ensure the interfaces.d directory exists
+        mkdir -p "${mount_point}/etc/network/interfaces.d"
+        
+        # Force-create the main configuration file if it's missing (Alpine Cloud case)
+        if [ ! -f "${mount_point}/etc/network/interfaces" ]; then
+            echo "[*] Main interfaces file missing. Creating fallback definition."
+            cat <<EOF > "${mount_point}/etc/network/interfaces"
+# This file is auto-generated by vm-ctl
+auto lo
+iface lo inet loopback
+
+# Source directory snippets
+source /etc/network/interfaces.d/*
+EOF
+        fi
+        
+        # Now we safely deploy our static interface config
+        cat <<EOF > "${mount_point}/etc/network/interfaces.d/eth0"
+auto eth0
+iface eth0 inet static
+    address ${requested_ip}
+    gateway ${requested_gateway}
+    dns-nameservers ${requested_dns}
+EOF
+        echo "[SUCCESS] Debian/Alpine network interfaces configuration injected."
+
+    # Layout C: Enterprise Linux / Rocky / Alma / Fedora (NetworkManager KeyFiles)
+    elif [ -d "${mount_point}/etc/NetworkManager/system-connections" ]; then
+        echo "[*] Target layout detected: NetworkManager KeyFile (RHEL/Fedora style)"
+        
+        # Modern NetworkManager uses native INI-like profiles instead of legacy ifcfg scripts
+        cat <<EOF > "${mount_point}/etc/NetworkManager/system-connections/eth0.nmconnection"
+[connection]
+id=eth0
+type=ethernet
+interface-name=eth0
+
+[ethernet]
+
+[ipv4]
+address1=${requested_ip},${requested_gateway}
+dns=${requested_dns};
+method=manual
+
+[ipv6]
+method=disabled
+EOF
+        chmod 600 "${mount_point}/etc/NetworkManager/system-connections/eth0.nmconnection"
+        echo "[SUCCESS] NetworkManager connection profile successfully generated."
+
+    else
+        echo "[WARN] Unsupported or unrecognized network management layout. Host file changes skipped."
+        return 1
+    fi
+
+    return 0
+}
+
 # --- Parse Command Line Arguments ---
 if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect" || "$1" == "destroy" || "$1" == "set" ]]; then
     ACTION="$1"
@@ -97,7 +298,7 @@ if [[ "$1" == "start" || "$1" == "stop" || "$1" == "status" || "$1" == "connect"
 else
     echo "Usage: $0 {start|stop|status|connect|destroy|set} [options]"
     echo "Options for lifecycle: --name NAME | --ram MB | --cpus INT | --iso PATH_TO_ISO | --snapshot"
-    echo "Options for set:       --name NAME {--root-pass PASSWORD | --disable-cloud-init}"
+    echo "Options for set:       --name NAME {--root-pass PASSWORD | --disable-cloud-init | --static-ip IP [/MASK] [--gateway GW] [--dns DNS]}"
     exit 1
 fi
 
@@ -107,6 +308,9 @@ fi
 if [ "$ACTION" == "set" ]; then
     ROOT_PASSWORD=""
     DISABLE_CLOUD_INIT=false
+    STATIC_IP=""
+    GATEWAY=""
+    DNS=""
     OP_COUNT=0
 
     while [[ "$#" -gt 0 ]]; do
@@ -114,6 +318,9 @@ if [ "$ACTION" == "set" ]; then
             --name)               VM_NAME="$2"; shift 2 ;;
             --root-pass)          ROOT_PASSWORD="$2"; OP_COUNT=$((OP_COUNT + 1)); shift 2 ;;
             --disable-cloud-init) DISABLE_CLOUD_INIT=true; OP_COUNT=$((OP_COUNT + 1)); shift 1 ;;
+            --static-ip)          STATIC_IP="$2"; OP_COUNT=$((OP_COUNT + 1)); shift 2 ;;
+            --gateway)            GATEWAY="$2"; shift 2 ;;
+            --dns)                DNS="$2"; shift 2 ;;
             *) echo "[!] Error: Unknown option $1 for set command."; exit 1 ;;
         esac
     done
@@ -125,7 +332,7 @@ if [ "$ACTION" == "set" ]; then
     fi
 
     if [ "$OP_COUNT" -eq 0 ]; then
-        echo "[!] Error: No operation flag specified. You must provide either --root-pass or --disable-cloud-init."
+        echo "[!] Error: No operation flag specified. You must provide either --root-pass, --disable-cloud-init, or --static-ip."
         exit 1
     fi
 
@@ -146,11 +353,54 @@ if [ "$ACTION" == "set" ]; then
         exit 1
     fi
 
-    # Dispatch to specific tasks
+    # --- SHARED LOOPBACK DEVICE WORKFLOW FOR THE CHOSEN ACTION ---
+    # Since all 'set' actions require mounting the block device, we reuse your existing nbd wrapper pipeline
+    MOUNT_POINT="/mnt/vm_ctl_tmp"
+    
+    echo "[*] Initializing shared loopback block device wrapper..."
+    modprobe nbd max_part=8 2>/dev/null
+    NBD_DEV="/dev/nbd0"
+    
+    qemu-nbd --connect="${NBD_DEV}" "${DISK_IMG}"
+    sleep 2
+
+    # Map the largest data target partition
+    ROOT_PARTITION=$(lsblk -lnp -o NAME,TYPE,SIZE -b "${NBD_DEV}" | awk '$2=="part" {print $1, $3}' | sort -k2 -nr | awk 'NR==1 {print $1}')
+    if [ -z "$ROOT_PARTITION" ]; then
+        echo "[!] Error: Failed to map target storage blocks inside the virtual machine disk."
+        qemu-nbd --disconnect "${NBD_DEV}"
+        exit 1
+    fi
+
+    echo "[*] Mounting root system mapping partition (${ROOT_PARTITION}) to ${MOUNT_POINT}..."
+    mkdir -p "${MOUNT_POINT}"
+    mount "${ROOT_PARTITION}" "${MOUNT_POINT}"
+
+    # Dispatch context processing to specific task handler routines
     if [ -n "$ROOT_PASSWORD" ]; then
-        set_root_password "$DISK_IMG" "$ROOT_PASSWORD"
+        echo "[*] Injecting root password..."
+        echo "root:${ROOT_PASSWORD}" | chroot "${MOUNT_POINT}" chpasswd
+        EXEC_STATUS=$?
     elif [ "$DISABLE_CLOUD_INIT" = true ]; then
-        disable_cloud_init "$DISK_IMG"
+        echo "[*] Neutralizing cloud-init infrastructure components..."
+        chroot "${MOUNT_POINT}" systemctl mask cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service 2>/dev/null
+        EXEC_STATUS=$?
+    elif [ -n "$STATIC_IP" ]; then
+        set_static_ip "$VM_NAME" "$STATIC_IP" "$GATEWAY" "$DNS"
+        EXEC_STATUS=$?
+    fi
+
+    # Tear down loopback environment safely
+    echo "[*] Synchronizing file change metadata and safely unmounting workspace..."
+    sync
+    umount "${MOUNT_POINT}"
+    qemu-nbd --disconnect "${NBD_DEV}"
+    rmdir "${MOUNT_POINT}"
+
+    if [ $EXEC_STATUS -eq 0 ]; then
+        echo "[+] Operation successfully committed to the disk."
+    else
+        echo "[!] Warning: Task execution sequence reported an error status code."
     fi
 
     exit 0
@@ -347,7 +597,7 @@ QEMU_ARGS=(
     -cpu host
     -drive "if=pflash,format=raw,readonly=on,file=$UEFI_FW"
     -drive "file=$DISK_IMG,format=qcow2,if=virtio"
-    -netdev user,id=vnet0
+    -netdev bridge,id=vnet0,br=vm-ctl-br
     -device virtio-net-pci,netdev=vnet0
     -qmp "unix:$QMP_SOCKET,server,nowait"
     -monitor "unix:$MON_SOCKET,server,nowait"
@@ -370,6 +620,9 @@ if [ "$SNAPSHOT" = true ]; then
     QEMU_ARGS+=(-snapshot)
     echo "WARNING: Running in SNAPSHOT mode. Data changes will be discarded on stop."
 fi
+
+# Ensure host bridge is set
+ensure_host_bridge || exit 1
 
 echo "Launching native ARM64 virtual machine: $VM_NAME..."
 qemu-system-aarch64 "${QEMU_ARGS[@]}"
