@@ -64,9 +64,9 @@ done
 if [[ ${#MISSING_DEPS[@]} -gt 0 ]]; then
     echo -e "\n${RED}Critical dependencies missing. Please install the required packages:${NC}"
     if [[ "$PKG_MANAGER" == "fedora" ]]; then
-        echo -e "Run on your Lenovo LOQ:\n  ${BLUE}dnf install qemu-kvm qemu-img edk2-ovmf socat curl${NC}"
+        echo -e "Run on your x86_64 system:\n  ${BLUE}dnf install qemu-kvm qemu-img edk2-ovmf socat curl${NC}"
     else
-        echo -e "Run on your Orange Pi:\n  ${BLUE}apt install qemu-system-arm qemu-utils qemu-efi-aarch64 socat curl${NC}"
+        echo -e "Run on your aarch64 system:\n  ${BLUE}apt install qemu-system-arm qemu-utils qemu-efi-aarch64 socat curl${NC}"
     fi
     exit 1
 fi
