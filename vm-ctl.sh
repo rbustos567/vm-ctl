@@ -4,6 +4,7 @@
 # QEMU/KVM VM Orchestration Script (ISO Boot & UEFI Edition)
 # ==============================================================================
 
+
 ACTION=""
 VM_NAME="" # Left empty to enforce mandatory user input
 RAM="2048"
