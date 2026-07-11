@@ -26,6 +26,9 @@ vm-ctl/
 ```
 ----------------------
 
+```
+
+```text
 ## Quick Start: Deploying a Cloud Image (Recommended)
 
 Instead of installing an OS manually via an ISO, the fastest way to spin up a lightweight, production-ready virtual machine is using official **Cloud Images** (`.qcow2`). 
