@@ -27,9 +27,9 @@ vm-ctl/
 ----------------------
 
 
-```text
 ## Quick Start: Deploying a Cloud Image (Recommended)
 
+```text
 Instead of installing an OS manually via an ISO, the fastest way to spin up a lightweight, production-ready virtual machine is using official **Cloud Images** (`.qcow2`). 
 
 Since Cloud Images are secure by default and do not come with a pre-configured password, we will use `libguestfs-tools` to inject our credentials and disable initial metadata timeouts before the first boot.
