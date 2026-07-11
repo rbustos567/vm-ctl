@@ -26,7 +26,6 @@ vm-ctl/
 ```
 ----------------------
 
-```
 
 ```text
 ## Quick Start: Deploying a Cloud Image (Recommended)
