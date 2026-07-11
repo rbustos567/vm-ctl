@@ -49,7 +49,7 @@ if [[ "$HOST_ARCH" == "x86_64" ]]; then
     QEMU_NATIVE="qemu-system-x86_64"
 fi
 
-DEPENDENCIES=("$QEMU_NATIVE" qemu-img socat curl)
+DEPENDENCIES=("$QEMU_NATIVE" qemu-img socat curl dhclient)
 MISSING_DEPS=()
 
 for cmd in "${DEPENDENCIES[@]}"; do
