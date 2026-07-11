@@ -1,6 +1,6 @@
 # vm-ctl
 
-A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrator framework written in Bash. Designed specifically for managing ARM64 virtual machines on single-board computers (like the Orange Pi 6 Plus) and edge environments without the overhead of heavy virtualization management daemons.
+A lightweight, dependency-clean, and headless QEMU/KVM virtualization orchestrator framework written in Bash. Designed specifically for managing aarch64 and x86_64 virtual machines and edge environments without the overhead of heavy virtualization management daemons.
 
 ---------------------
 
