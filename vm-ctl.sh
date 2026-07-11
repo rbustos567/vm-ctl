@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# QEMU/KVM VM Orchestration Script (ISO Boot & UEFI Edition)
+# QEMU/KVM VM Orchestration Script (Dynamic Cross-Platform Edition)
 # ==============================================================================
-
 
 ACTION=""
 VM_NAME="" # Left empty to enforce mandatory user input
@@ -12,29 +11,26 @@ CPUS="2"
 ISO_IMG=""
 SNAPSHOT=false
 
+# --- HOST ENVIRONMENT DETECTION ---
+HOST_ARCH=$(uname -m)
+PKG_MANAGER="debian"
+if command -v dnf &> /dev/null; then PKG_MANAGER="fedora"; fi
+
 # ==============================================================================
 # DECOUPLED TASK FUNCTIONS FOR PROVISIONING (Operates via QEMU-NBD)
 # ==============================================================================
 
 # --- HOST INFRASTRUCTURE VALIDATION ---
-# Dynamically verifies, provisions, and configures the host-level network bridge
-# to establish seamless Layer 2 routing between the host machine and QEMU guests.
 ensure_host_bridge() {
     local bridge_name="vm-ctl-br"
     local phys_interface
     
-    # 1. DYNAMIC UPLINK INTERFACE DETECTION
-    # Inspects the host kernel routing table to identify the active interface 
-    # managing the default gateway path to the internet.
     phys_interface=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
-    
     if [ -z "$phys_interface" ]; then
         echo "[ERROR] No active internet-facing network interface detected on the host."
         return 1
     fi
 
-    # 2. RUNTIME INFRASTRUCTURE EXISTENCE CHECK
-    # Reuses the bridge if it is already present in memory to maintain system state efficiency.
     if ip link show "$bridge_name" >/dev/null 2>&1; then
         return 0
     fi
@@ -42,8 +38,6 @@ ensure_host_bridge() {
     echo "[*] Active host uplink discovered: ${phys_interface}"
     echo "[*] Initializing dedicated network infrastructure: ${bridge_name}..."
 
-    # 3. PRIVILEGE ELEVATION VALIDATION
-    # Assures the calling context has administrative capabilities or sudo availability.
     if [ "$EUID" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
         echo "[ERROR] Root privileges or sudo required to provision the host network layer."
         return 1
@@ -52,20 +46,14 @@ ensure_host_bridge() {
     local sudo_cmd=""
     [ "$EUID" -ne 0 ] && sudo_cmd="sudo"
 
-    # 4. ATOMIC NETWORK BRIDGE PROVISIONING
-    # Instantiates the software switch and enslaves the physical uplink card.
     $sudo_cmd ip link add name "$bridge_name" type bridge
     $sudo_cmd ip link set "$phys_interface" master "$bridge_name"
     $sudo_cmd ip link set "$bridge_name" up
     $sudo_cmd ip link set "$phys_interface" up
     
-    # 5. IP FOOTPRINT MIGRATION
-    # Instructs DHCP client to bind the existing network lease context to the new bridge wrapper.
     echo "[*] Migrating host IP footprints via DHCP..."
     $sudo_cmd dhclient "$bridge_name"
 
-    # 6. QEMU HELPER POLICY INJECTION
-    # Authorizes the custom bridge within QEMU execution guidelines to prevent runtime drops.
     if [ ! -f /etc/qemu/bridge.conf ] || ! grep -q "allow $bridge_name" /etc/qemu/bridge.conf; then
         $sudo_cmd mkdir -p /etc/qemu
         echo "allow $bridge_name" | $sudo_cmd tee -a /etc/qemu/bridge.conf >/dev/null
@@ -73,81 +61,6 @@ ensure_host_bridge() {
     fi
     
     echo "[SUCCESS] Host network runtime patched. Bridge ${bridge_name} is active on ${phys_interface}."
-}
-
-# TASK FUNCTION: INJECT ROOT PASSWORD
-set_root_password() {
-    local disk_path="$1"
-    local password="$2"
-    local mount_point="/mnt/vm_ctl_tmp"
-
-    echo "[*] Preparing host environment for password injection..."
-    modprobe nbd max_part=8 2>/dev/null
-    local nbd_dev="/dev/nbd0"
-    
-    qemu-nbd --connect="${nbd_dev}" "${disk_path}"
-    sleep 2
-
-    # Sort partitions by size in bytes (SIZE column) in descending order and pick the largest one
-    local root_partition=$(lsblk -lnp -o NAME,TYPE,SIZE -b "${nbd_dev}" | awk '$2=="part" {print $1, $3}' | sort -k2 -nr | awk 'NR==1 {print $1}')
-    if [ -z "$root_partition" ]; then
-        echo "[!] Error: No partitions detected inside the virtual disk."
-        qemu-nbd --disconnect "${nbd_dev}"
-        return 1
-    fi
-
-    echo "[*] Mounting root partition (${root_partition}) to ${mount_point}..."
-    mkdir -p "${mount_point}"
-    mount "${root_partition}" "${mount_point}"
-
-    echo "[*] Injecting root password..."
-    echo "root:${password}" | chroot "${mount_point}" chpasswd
-
-    echo "[*] Synchronizing filesystem changes and releasing block device..."
-    sync
-    umount "${mount_point}"
-    qemu-nbd --disconnect "${nbd_dev}"
-    rmdir "${mount_point}"
-
-    echo "[+] Root password set successfully!"
-}
-
-# TASK FUNCTION: DISABLE CLOUD-INIT
-disable_cloud_init() {
-    local disk_path="$1"
-    local mount_point="/mnt/vm_ctl_tmp"
-
-    echo "[*] Preparing host environment for cloud-init deactivation..."
-    modprobe nbd max_part=8 2>/dev/null
-    local nbd_dev="/dev/nbd0"
-    
-    qemu-nbd --connect="${nbd_dev}" "${disk_path}"
-    sleep 2
-
-    # Sort partitions by size in bytes (SIZE column) in descending order and pick the largest one
-    local root_partition=$(lsblk -lnp -o NAME,TYPE,SIZE -b "${nbd_dev}" | awk '$2=="part" {print $1, $3}' | sort -k2 -nr | awk 'NR==1 {print $1}')
-    if [ -z "$root_partition" ]; then
-        echo "[!] Error: No partitions detected inside the virtual disk."
-        qemu-nbd --disconnect "${nbd_dev}"
-        return 1
-    fi
-
-    echo "[*] Mounting root partition (${root_partition}) to ${mount_point}..."
-    mkdir -p "${mount_point}"
-    mount "${root_partition}" "${mount_point}"
-
-    echo "[*] Neutralizing cloud-init infrastructure components..."
-    
-    # Mask the services (Standard systemd block)
-    chroot "${mount_point}" systemctl mask cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service 2>/dev/null
-
-    echo "[*] Synchronizing filesystem changes and releasing block device..."
-    sync
-    umount "${mount_point}"
-    qemu-nbd --disconnect "${nbd_dev}"
-    rmdir "${mount_point}"
-
-    echo "[+] cloud-init disabled successfully!"
 }
 
 # TASK FUNCTION: INJECT STATIC NETWORK CONFIGURATION (OFFLINE MODE)
@@ -158,28 +71,23 @@ set_static_ip() {
     local requested_dns="$4"
     local mount_point="/mnt/vm_ctl_tmp"
 
-    # Validate mandatory inputs
     if [ -z "$target_vm_name" ] || [ -z "$requested_ip" ]; then
         echo "[ERROR] Missing required parameters. Usage: set_static_ip <vm_name> <ip_address> [gateway] [dns]"
         return 1
     fi
 
-    # 1. Sanitize IP format: Append a /24 CIDR mask if the user omitted it
     if [[ "$requested_ip" != */* ]]; then
         echo "[*] No CIDR prefix specified. Appending /24 by default."
         requested_ip="${requested_ip}/24"
     fi
 
-    # 2. Smart Default: Fallback to Cloudflare DNS if none was specified
     if [ -z "$requested_dns" ]; then
         requested_dns="1.1.1.1"
     fi
 
-    # 3. Smart Default: Infer the gateway (.1 of the subnet) if none was provided
     if [ -z "$requested_gateway" ]; then
         local raw_ip_address
         raw_ip_address=$(echo "$requested_ip" | cut -d'/' -f1)
-        # Extract the first 3 octets and append .1
         requested_gateway=$(echo "$raw_ip_address" | awk -F. '{print $1"."$2"."$3".1"}')
         echo "[*] No gateway provided. Inferred network gateway: ${requested_gateway}"
     fi
@@ -189,17 +97,11 @@ set_static_ip() {
     echo "    Gateway: $requested_gateway"
     echo "    DNS    : $requested_dns"
 
-    # --- MULTI-DISTRO FEATURE DETECTION BASED ON FILESYSTEM LAYOUT ---
-
-    # Layout A: Netplan core (Common in Ubuntu and Netplan-enabled Cloud Images)
     if [ -d "${mount_point}/etc/netplan" ]; then
         echo "[*] Target layout detected: Netplan"
-        
-        # Generate a precise timestamp for the backup file (Format: YYYYMMDD_HHMMSS)
         local timestamp
         timestamp=$(date +"%Y%m%d_%H%M%S")
 
-        # Backup any existing .yaml files before purging them
         for original_file in "${mount_point}/etc/netplan/"*.yaml; do
             if [ -f "$original_file" ]; then
                 local backup_name="${original_file}.bak_${timestamp}"
@@ -208,11 +110,8 @@ set_static_ip() {
             fi
         done
         
-        # Clean up only the active configuration files, leaving our new backups safe
-        # (Since we append .bak_[timestamp], they won't match the *.yaml extension anymore)
         rm -f "${mount_point}/etc/netplan/"*.yaml
         
-        # Inject our definitive static configuration profile
         cat <<EOF > "${mount_point}/etc/netplan/50-cloud-init.yaml"
 network:
   version: 2
@@ -230,14 +129,10 @@ EOF
         chmod 600 "${mount_point}/etc/netplan/50-cloud-init.yaml"
         echo "[SUCCESS] Netplan static profile injected into 50-cloud-init.yaml."
 
-    # Layout B: Traditional Debian / Alpine Linux (ifupdown core)
     elif [ -d "${mount_point}/etc/network" ]; then
         echo "[*] Target layout detected: ifupdown (Debian/Alpine style)"
-        
-        # Ensure the interfaces.d directory exists
         mkdir -p "${mount_point}/etc/network/interfaces.d"
         
-        # Force-create the main configuration file if it's missing (Alpine Cloud case)
         if [ ! -f "${mount_point}/etc/network/interfaces" ]; then
             echo "[*] Main interfaces file missing. Creating fallback definition."
             cat <<EOF > "${mount_point}/etc/network/interfaces"
@@ -245,12 +140,10 @@ EOF
 auto lo
 iface lo inet loopback
 
-# Source directory snippets
 source /etc/network/interfaces.d/*
 EOF
         fi
         
-        # Now we safely deploy our static interface config
         cat <<EOF > "${mount_point}/etc/network/interfaces.d/eth0"
 auto eth0
 iface eth0 inet static
@@ -260,11 +153,9 @@ iface eth0 inet static
 EOF
         echo "[SUCCESS] Debian/Alpine network interfaces configuration injected."
 
-    # Layout C: Enterprise Linux / Rocky / Alma / Fedora (NetworkManager KeyFiles)
     elif [ -d "${mount_point}/etc/NetworkManager/system-connections" ]; then
         echo "[*] Target layout detected: NetworkManager KeyFile (RHEL/Fedora style)"
         
-        # Modern NetworkManager uses native INI-like profiles instead of legacy ifcfg scripts
         cat <<EOF > "${mount_point}/etc/NetworkManager/system-connections/eth0.nmconnection"
 [connection]
 id=eth0
@@ -326,38 +217,20 @@ if [ "$ACTION" == "set" ]; then
         esac
     done
 
-    # Strict Validations for Target Operations
-    if [ -z "$VM_NAME" ]; then
-        echo "[!] Error: --name is required."
-        exit 1
-    fi
-
-    if [ "$OP_COUNT" -eq 0 ]; then
-        echo "[!] Error: No operation flag specified. You must provide either --root-pass, --disable-cloud-init, or --static-ip."
-        exit 1
-    fi
-
-    if [ "$OP_COUNT" -gt 1 ]; then
-        echo "[!] Error: Multiple operations detected. Please run only one configuration change at a time."
-        exit 1
-    fi
+    if [ -z "$VM_NAME" ]; then echo "[!] Error: --name is required."; exit 1; fi
+    if [ "$OP_COUNT" -eq 0 ]; then echo "[!] Error: No operation flag specified."; exit 1; fi
+    if [ "$OP_COUNT" -gt 1 ]; then echo "[!] Error: Multiple operations detected."; exit 1; fi
 
     DISK_IMG="./storage/${VM_NAME}.qcow2"
-    if [ ! -f "$DISK_IMG" ]; then
-        echo "[!] Error: Virtual disk not found at $DISK_IMG"
-        exit 1
-    fi
+    if [ ! -f "$DISK_IMG" ]; then echo "[!] Error: Virtual disk not found at $DISK_IMG"; exit 1; fi
 
-    # Check execution profile context to preserve disk integrity
-    if pgrep -f "qemu-system-aarch64.*-name $VM_NAME" > /dev/null; then
+    # Agnostic process detection using the dynamic name parameter pattern
+    if pgrep -f "qemu-system-.*-name $VM_NAME" > /dev/null; then
         echo "[!] Error: VM '${VM_NAME}' is currently running. Please stop it before modifying the disk."
         exit 1
     fi
 
-    # --- SHARED LOOPBACK DEVICE WORKFLOW FOR THE CHOSEN ACTION ---
-    # Since all 'set' actions require mounting the block device, we reuse your existing nbd wrapper pipeline
     MOUNT_POINT="/mnt/vm_ctl_tmp"
-    
     echo "[*] Initializing shared loopback block device wrapper..."
     modprobe nbd max_part=8 2>/dev/null
     NBD_DEV="/dev/nbd0"
@@ -365,7 +238,6 @@ if [ "$ACTION" == "set" ]; then
     qemu-nbd --connect="${NBD_DEV}" "${DISK_IMG}"
     sleep 2
 
-    # Map the largest data target partition
     ROOT_PARTITION=$(lsblk -lnp -o NAME,TYPE,SIZE -b "${NBD_DEV}" | awk '$2=="part" {print $1, $3}' | sort -k2 -nr | awk 'NR==1 {print $1}')
     if [ -z "$ROOT_PARTITION" ]; then
         echo "[!] Error: Failed to map target storage blocks inside the virtual machine disk."
@@ -377,7 +249,6 @@ if [ "$ACTION" == "set" ]; then
     mkdir -p "${MOUNT_POINT}"
     mount "${ROOT_PARTITION}" "${MOUNT_POINT}"
 
-    # Dispatch context processing to specific task handler routines
     if [ -n "$ROOT_PASSWORD" ]; then
         echo "[*] Injecting root password..."
         echo "root:${ROOT_PASSWORD}" | chroot "${MOUNT_POINT}" chpasswd
@@ -391,7 +262,6 @@ if [ "$ACTION" == "set" ]; then
         EXEC_STATUS=$?
     fi
 
-    # Tear down loopback environment safely
     echo "[*] Synchronizing file change metadata and safely unmounting workspace..."
     sync
     umount "${MOUNT_POINT}"
@@ -429,7 +299,6 @@ if [ "$ACTION" == "status" ]; then
     echo "========================================================================================================="
     
     STORAGE_DIR="./storage"
-    
     if [ ! -d "$STORAGE_DIR" ] || [ -z "$(ls ${STORAGE_DIR}/*.qcow2 2>/dev/null)" ]; then
         echo "No virtual machines have been created yet (no disks found in $STORAGE_DIR)."
         echo "========================================================================================================="
@@ -441,9 +310,10 @@ if [ "$ACTION" == "status" ]; then
     
     for disk in "${STORAGE_DIR}"/*.qcow2; do
         name=$(basename "$disk" .qcow2)
-        
         QMP_SOCKET="/tmp/qmp-${name}.sock"
-        pid=$(pgrep -f "qemu-system-aarch64.*-name $name" | head -n 1)
+        
+        # Agnostic check matching any qemu binary architecture pattern
+        pid=$(pgrep -f "qemu-system-.*-name $name" | head -n 1)
 
         if [ -n "$pid" ] && [ -S "$QMP_SOCKET" ]; then
             printf "%-22s \e[32m%-12s\e[0m %-10s %-12s %-30s\n" "$name" "RUNNING" "$pid" "Active" "$disk"
@@ -458,16 +328,13 @@ if [ "$ACTION" == "status" ]; then
     exit 0
 fi
 
-# --- Enforce Mandatory VM Name for START, STOP and CONNECT actions ---
 if [[ "$ACTION" == "start" || "$ACTION" == "stop" || "$ACTION" == "connect" ]]; then
     if [ -z "$VM_NAME" ]; then
         echo "ERROR: The --name parameter is mandatory for '$ACTION' action."
-        echo "Example: vm-ctl $ACTION --name alpine-server"
         exit 1
     fi
 fi
 
-# --- Dynamically Resolve Operational Routes based on VM_NAME ---
 DISK_IMG="./storage/${VM_NAME}.qcow2"
 QMP_SOCKET="/tmp/qmp-${VM_NAME}.sock"
 MON_SOCKET="/tmp/monitor-${VM_NAME}.sock"
@@ -477,10 +344,10 @@ SERIAL_SOCKET="/tmp/serial-${VM_NAME}.sock"
 # ACTION: CONNECT
 # ==============================================================================
 if [ "$ACTION" == "connect" ]; then
-    pid=$(pgrep -f "qemu-system-aarch64.*-name $VM_NAME" | head -n 1)
+    pid=$(pgrep -f "qemu-system-.*-name $VM_NAME" | head -n 1)
     if [ -z "$pid" ] || [ ! -S "$QMP_SOCKET" ]; then
         echo "ERROR: VM '$VM_NAME' is not running."
-        echo "Please start it first using: vm-ctl start --name $VM_NAME"
+	echo "Please start it first using: vm-ctl start --name $VM_NAME"
         exit 1
     fi
 
@@ -495,7 +362,7 @@ if [ "$ACTION" == "connect" ]; then
     sleep 1
 
     socat -,raw,echo=0,escape=0x0f UNIX-CONNECT:"$SERIAL_SOCKET"
-    
+
     echo -e "\n----------------------------------------------------------------------"
     echo "Disconnected from VM: $VM_NAME console stream."
     exit 0
@@ -505,10 +372,10 @@ fi
 # ACTION: DESTROY
 # ==============================================================================
 if [ "$ACTION" == "destroy" ]; then
-    pid=$(pgrep -f "qemu-system-aarch64.*-name $VM_NAME" | head -n 1)
+    pid=$(pgrep -f "qemu-system-.*-name $VM_NAME" | head -n 1)
     if [ -n "$pid" ]; then
         echo "ERROR: VM '$VM_NAME' is currently RUNNING (PID: $pid)."
-        echo "Please stop the virtual machine before destroying it: vm-ctl stop --name $VM_NAME"
+	echo "Please stop the virtual machine before destroying it: vm-ctl stop --name $VM_NAME"
         exit 1
     fi
 
@@ -517,18 +384,17 @@ if [ "$ACTION" == "destroy" ]; then
         exit 1
     fi
 
-    echo -e "\e[31m⚠️  WARNING: You are about to permanently DELETE the VM '$VM_NAME' and all its data.\e[0m"
+    echo -e "\e[31m⚠️  WARNING: You are about to permanently DELETE the VM '$VM_NAME'.\e[0m"
     read -p "Are you absolutely sure you want to proceed? (type 'yes' to confirm): " CONFIRM
-    
+
     if [ "$CONFIRM" != "yes" ]; then
         echo "Destruction aborted. Your virtual machine remains intact."
         exit 0
     fi
 
     echo "Purging resources for VM: $VM_NAME..."
-    rm -f "$QMP_SOCKET" "$MON_SOCKET" "/tmp/serial-${VM_NAME}.sock"
-    rm -f "$DISK_IMG"
-    
+    rm -f "$QMP_SOCKET" "$MON_SOCKET" "$SERIAL_SOCKET" "$DISK_IMG"
+
     echo -e "\e[32m✔ Success:\e[0m Virtual machine '$VM_NAME' and its storage assets have been completely destroyed."
     exit 0
 fi
@@ -538,10 +404,7 @@ fi
 # ==============================================================================
 if [ "$ACTION" == "stop" ]; then
     echo "Attempting graceful shutdown for VM: $VM_NAME..."
-    if [ ! -S "$QMP_SOCKET" ]; then
-        echo "ERROR: Control socket not found at $QMP_SOCKET. Is the VM actually running?"
-        exit 1
-    fi
+    if [ ! -S "$QMP_SOCKET" ]; then echo "ERROR: Control socket not found."; exit 1; fi
     (
         echo '{ "execute": "qmp_capabilities" }'
         sleep 0.1
@@ -563,41 +426,104 @@ if [ "$ACTION" == "stop" ]; then
         echo "VM did not respond. Executing hard power-off (SIGKILL)..."
         pkill -9 -f "name $VM_NAME"
         rm -f "$QMP_SOCKET" "$MON_SOCKET"
-        echo "VM '$VM_NAME' forced to stop and resources cleared."
+	echo "VM '$VM_NAME' forced to stop and resources cleared."
     fi
     exit 0
 fi
 
 # ==============================================================================
-# ACTION: START
+# ACTION: START (DYNAMIC HYBRID ROUTING ENGINE)
 # ==============================================================================
-if [ ! -e /dev/kvm ]; then
-    echo "ERROR: /dev/kvm does not exist. Hardware acceleration unavailable."
-    exit 1
-fi
-
 if [ ! -f "$DISK_IMG" ]; then
     echo "ERROR: Storage disk image not found at target location: $DISK_IMG"
-    echo "Please create the qcow2 image first using:"
-    echo "  qemu-img create -f qcow2 $DISK_IMG 20G"
+    echo "Please create the qcow2 image first using: qemu-img create -f qcow2 $DISK_IMG 20G"
     exit 1
 fi
 
-UEFI_FW="/usr/share/AAVMF/AAVMF_CODE.fd"
+# 1. DYNAMIC GUEST ARCHITECTURE INSPECTION
+# Try to extract from metadata, otherwise use an advanced fallback
+GUEST_ARCH=$(qemu-img info "$DISK_IMG" | grep "architecture:" | awk '{print $2}' 2>/dev/null || true)
+
+if [ -z "$GUEST_ARCH" ]; then
+    # Improved fallback heuristic:
+    # 1. Check if the file name contains x86_64, amd64 or x86
+    if [[ "$VM_NAME" == *x86_64* || "$VM_NAME" == *amd64* || "$VM_NAME" == *x86* || "$(basename "$DISK_IMG")" == *amd64* || "$(basename "$DISK_IMG")" == *x86_64* ]]; then
+        GUEST_ARCH="x86_64"
+    # 2. Check if the file name contains arm64, aarch64 or variants
+    elif [[ "$VM_NAME" == *aarch64* || "$VM_NAME" == *arm64* || "$(basename "$DISK_IMG")" == *aarch64* || "$(basename "$DISK_IMG")" == *arm64* ]]; then
+        GUEST_ARCH="aarch64"
+    else
+        # 3. Ultimate safe boundary: Match host architecture to assume native run execution
+        GUEST_ARCH="$HOST_ARCH"
+        echo "[*] Warning: Unable to determine guest architecture from image. Assuming host native: ${GUEST_ARCH}"
+    fi
+fi
+
+QEMU_BINARY=""
+VM_MACHINE=""
+UEFI_FW=""
+CPU_PROFILE=""
+ACCEL_ARGS=""
+
+echo "[*] Host Environment: ${HOST_ARCH} | Target Guest Instance: ${GUEST_ARCH}"
+
+if [[ "$GUEST_ARCH" == "x86_64" ]]; then
+    QEMU_BINARY="qemu-system-x86_64"
+    VM_MACHINE="q35"
+    
+    if [[ "$PKG_MANAGER" == "fedora" ]]; then
+        UEFI_FW="/usr/share/edk2/ovmf/OVMF_CODE.fd"
+    else
+        UEFI_FW="/usr/share/OVMF/OVMF_CODE.fd"
+    fi
+
+    if [[ "$HOST_ARCH" == "x86_64" ]]; then
+        # Native Hardware Virtualization on your x86_64 machine
+        if [ ! -e /dev/kvm ]; then echo "ERROR: /dev/kvm unavailable."; exit 1; fi
+        ACCEL_ARGS="-enable-kvm"
+        CPU_PROFILE="host"
+    else
+        # Cross-Architecture Emulation via TCG Engine on your aarch64 machine
+        ACCEL_ARGS="-tcg,thread=multi"
+        CPU_PROFILE="qemu64"
+    fi
+else
+    QEMU_BINARY="qemu-system-aarch64"
+    VM_MACHINE="virt"
+    
+    if [[ "$PKG_MANAGER" == "fedora" ]]; then
+        UEFI_FW="/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw"
+    else
+        UEFI_FW="/usr/share/AAVMF/AAVMF_CODE.fd"
+    fi
+
+    if [[ "$HOST_ARCH" == "aarch64" ]]; then
+        # Native Hardware Virtualization on your aarch64 machine
+        if [ ! -e /dev/kvm ]; then echo "ERROR: /dev/kvm unavailable."; exit 1; fi
+        ACCEL_ARGS="-enable-kvm"
+        CPU_PROFILE="host"
+    else
+        # Cross-Architecture Emulation via TCG Engine on your x86_64 machine
+        ACCEL_ARGS="-tcg,thread=multi"
+        CPU_PROFILE="cortex-a57"
+    fi
+fi
+
 if [ ! -f "$UEFI_FW" ]; then
-    echo "ERROR: UEFI firmware not found at $UEFI_FW. Run: sudo apt install qemu-efi-aarch64"
+    echo "ERROR: UEFI firmware payload missing at target mapping path: $UEFI_FW"
     exit 1
 fi
 
 QEMU_ARGS=(
-    -enable-kvm
-    -machine virt
+    $ACCEL_ARGS
+    -machine "$VM_MACHINE"
     -name "$VM_NAME"
     -m "$RAM"
     -smp "$CPUS"
-    -cpu host
+    -cpu "$CPU_PROFILE"
     -drive "if=pflash,format=raw,readonly=on,file=$UEFI_FW"
-    -drive "file=$DISK_IMG,format=qcow2,if=virtio"
+    -drive "file=$DISK_IMG,format=qcow2,if=none,id=drive0"
+    -device "virtio-blk-pci,drive=drive0,id=blk0"
     -netdev bridge,id=vnet0,br=vm-ctl-br
     -device virtio-net-pci,netdev=vnet0
     -qmp "unix:$QMP_SOCKET,server,nowait"
@@ -609,10 +535,7 @@ QEMU_ARGS=(
 )
 
 if [ -n "$ISO_IMG" ]; then
-    if [ ! -f "$ISO_IMG" ]; then
-        echo "ERROR: ISO image not found at $ISO_IMG"
-        exit 1
-    fi
+    if [ ! -f "$ISO_IMG" ]; then echo "ERROR: ISO image not found at $ISO_IMG"; exit 1; fi
     QEMU_ARGS+=(-device virtio-scsi-pci -drive "file=$ISO_IMG,media=cdrom,if=none,id=cd0" -device scsi-cd,drive=cd0)
     echo "ISO attached: $ISO_IMG"
 fi
@@ -622,16 +545,15 @@ if [ "$SNAPSHOT" = true ]; then
     echo "WARNING: Running in SNAPSHOT mode. Data changes will be discarded on stop."
 fi
 
-# Ensure host bridge is set
 ensure_host_bridge || exit 1
 
-echo "Launching native ARM64 virtual machine: $VM_NAME..."
-qemu-system-aarch64 "${QEMU_ARGS[@]}"
+echo "Launching virtual machine target footprint via ${QEMU_BINARY}..."
+"$QEMU_BINARY" "${QEMU_ARGS[@]}"
 
 if [ $? -eq 0 ]; then
-    echo "VM '$VM_NAME' successfully initialized with KVM acceleration."
+    echo "VM '$VM_NAME' successfully initialized."
     echo "Control socket exposed at: $QMP_SOCKET"
     echo "Connect to console via: vm-ctl connect --name $VM_NAME"
 else
-    echo "ERROR: QEMU AArch64 process failed to initialize properly."
+    echo "ERROR: QEMU execution routing failed to initialize process properly."
 fi
