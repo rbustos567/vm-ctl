@@ -32,9 +32,6 @@ Instead of installing an OS manually via an ISO, the fastest way to spin up a li
 
 Since Cloud Images are secure by default and do not come with a pre-configured password, we will use `libguestfs-tools` to inject our credentials and disable initial metadata timeouts before the first boot.
 
-```
-
-```text
 1. Download the official ARM64 Cloud Image (Debian 12)
 curl -L -o ./storage/debian-test.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2
 
