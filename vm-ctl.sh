@@ -25,17 +25,27 @@ ensure_host_bridge() {
     local bridge_name="vm-ctl-br"
     local phys_interface
     
+    # Dynamically extract the active interface handling the host's default gateway route
     phys_interface=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
     if [ -z "$phys_interface" ]; then
         echo "[ERROR] No active internet-facing network interface detected on the host."
         return 1
     fi
 
+    # Return early if the network bridge configuration is already provisioned and active
     if ip link show "$bridge_name" >/dev/null 2>&1; then
         return 0
     fi
 
     echo "[*] Active host uplink discovered: ${phys_interface}"
+    
+    local is_wireless=false
+    if [[ "$phys_interface" == wl* ]]; then
+        is_wireless=true
+        echo "[WARN] Host uplink is a Wireless interface (${phys_interface})."
+        echo "[WARN] Standard Linux bridging often fails on Wi-Fi due to 802.11 3-address restrictions."
+    fi
+
     echo "[*] Initializing dedicated network infrastructure: ${bridge_name}..."
 
     if [ "$EUID" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
@@ -46,21 +56,60 @@ ensure_host_bridge() {
     local sudo_cmd=""
     [ "$EUID" -ne 0 ] && sudo_cmd="sudo"
 
+    # Allocate the software bridge link wrapper inside the host kernel network stack
     $sudo_cmd ip link add name "$bridge_name" type bridge
-    $sudo_cmd ip link set "$phys_interface" master "$bridge_name"
+    
+    # Attempt interface enslavement; ignore failure outputs if bound to a wireless card
+    if ! $sudo_cmd ip link set "$phys_interface" master "$bridge_name" 2>/dev/null; then
+        echo "[WARN] Kernel rejected enslaving ${phys_interface} to ${bridge_name} (Expected on Wi-Fi)."
+    fi
+
+    # Transition both network devices into an administrative UP operational state
     $sudo_cmd ip link set "$bridge_name" up
     $sudo_cmd ip link set "$phys_interface" up
     
-    echo "[*] Migrating host IP footprints via DHCP..."
-    $sudo_cmd dhclient "$bridge_name"
+    # --- AUTOMATED AND DYNAMIC WIRELESS WORKAROUND ---
+    if [ "$is_wireless" = true ]; then
+        # Extract the current active IPv4 address assigned to the wireless interface
+        local host_ip
+        host_ip=$(ip -4 addr show dev "$phys_interface" | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)
+        
+        # Determine the network prefix dynamically from the active host IP
+        local ip_prefix
+        if [ -n "$host_ip" ]; then
+            ip_prefix=$(echo "$host_ip" | awk -F. '{print $1"."$2"."$3}')
+        else
+            # Emergency fallback: Parse the local subnet prefix directly from the routing table
+            ip_prefix=$(ip route show dev "$phys_interface" | awk '/proto kernel/ {print $1}' | cut -d. -f1-3 | head -n 1)
+        fi
 
+        # Safely assemble the bridge IP using the parsed network prefix and appending .100
+        local bridge_static_ip="${ip_prefix}.100"
+
+        echo "[*] Wireless network detected. Dynamically binding static IP ${bridge_static_ip}/24 to bridge ${bridge_name}."
+        
+        # Inject the calculated dynamic static IP footprint directly onto the host bridge interface
+        $sudo_cmd ip addr add "${bridge_static_ip}/24" dev "$bridge_name" 2>/dev/null || true
+        
+        # Apply automated routing trust updates directly across the Fedora firewalld daemon
+        if command -v firewall-cmd &>/dev/null; then
+            $sudo_cmd firewall-cmd --zone=trusted --add-interface="$bridge_name" --permanent &>/dev/null
+            $sudo_cmd firewall-cmd --reload &>/dev/null
+        fi
+    else
+        # Execute traditional DHCP footprint migration over native wired (Ethernet) topologies
+        echo "[*] Migrating host IP footprints via DHCP..."
+        $sudo_cmd dhclient "$bridge_name" 2>/dev/null || true
+    fi
+
+    # Inject execution allowances into the system QEMU helper authorization definitions
     if [ ! -f /etc/qemu/bridge.conf ] || ! grep -q "allow $bridge_name" /etc/qemu/bridge.conf; then
         $sudo_cmd mkdir -p /etc/qemu
         echo "allow $bridge_name" | $sudo_cmd tee -a /etc/qemu/bridge.conf >/dev/null
         $sudo_cmd chmod 0644 /etc/qemu/bridge.conf
     fi
     
-    echo "[SUCCESS] Host network runtime patched. Bridge ${bridge_name} is active on ${phys_interface}."
+    echo "[SUCCESS] Host network infrastructure processing complete."
 }
 
 # TASK FUNCTION: INJECT STATIC NETWORK CONFIGURATION (OFFLINE MODE)
@@ -76,6 +125,7 @@ set_static_ip() {
         return 1
     fi
 
+    # Enforce standard CIDR notation formatting; append classless /24 boundaries by default
     if [[ "$requested_ip" != */* ]]; then
         echo "[*] No CIDR prefix specified. Appending /24 by default."
         requested_ip="${requested_ip}/24"
@@ -85,6 +135,7 @@ set_static_ip() {
         requested_dns="1.1.1.1"
     fi
 
+    # Deduce the logical default gateway target using string parsing if parameters are missing
     if [ -z "$requested_gateway" ]; then
         local raw_ip_address
         raw_ip_address=$(echo "$requested_ip" | cut -d'/' -f1)
@@ -97,11 +148,13 @@ set_static_ip() {
     echo "    Gateway: $requested_gateway"
     echo "    DNS    : $requested_dns"
 
+    # --- ARCHITECTURE ENGINE A: NETPLAN (MODERN DEBIAN/UBUNTU INTERFACE MATCHER) ---
     if [ -d "${mount_point}/etc/netplan" ]; then
-        echo "[*] Target layout detected: Netplan"
+        echo "[*] Target layout detected: Netplan (Dynamic Multi-Interface Core)"
         local timestamp
         timestamp=$(date +"%Y%m%d_%H%M%S")
 
+        # Cycle and archive existing profile files inside the guest system data storage
         for original_file in "${mount_point}/etc/netplan/"*.yaml; do
             if [ -f "$original_file" ]; then
                 local backup_name="${original_file}.bak_${timestamp}"
@@ -110,13 +163,17 @@ set_static_ip() {
             fi
         done
         
+        # Wipe structural presets to prevent profile collisions during engine parse executions
         rm -f "${mount_point}/etc/netplan/"*.yaml
         
+        # Inject profile parameters utilizing a wild-card interface regex pattern descriptor ('e*')
         cat <<EOF > "${mount_point}/etc/netplan/50-cloud-init.yaml"
 network:
   version: 2
   ethernets:
-    eth0:
+    all-ethernets:
+      match:
+        name: "e*"
       dhcp4: no
       addresses:
         - ${requested_ip}
@@ -129,8 +186,9 @@ EOF
         chmod 600 "${mount_point}/etc/netplan/50-cloud-init.yaml"
         echo "[SUCCESS] Netplan static profile injected into 50-cloud-init.yaml."
 
+    # --- ARCHITECTURE ENGINE B: IFUPDOWN (LEGACY DEBIAN / SLIM UNIFIED ALPINE) ---
     elif [ -d "${mount_point}/etc/network" ]; then
-        echo "[*] Target layout detected: ifupdown (Debian/Alpine style)"
+        echo "[*] Target layout detected: ifupdown (Multi-interface Fallback Profile)"
         mkdir -p "${mount_point}/etc/network/interfaces.d"
         
         if [ ! -f "${mount_point}/etc/network/interfaces" ]; then
@@ -144,23 +202,49 @@ source /etc/network/interfaces.d/*
 EOF
         fi
         
-        cat <<EOF > "${mount_point}/etc/network/interfaces.d/eth0"
-auto eth0
+        # Populate target specifications across multiple fallback PCI naming targets simultaneously
+        cat <<EOF > "${mount_point}/etc/network/interfaces.d/lan-interfaces"
+auto eth0 enp0s1 enp0s2
 iface eth0 inet static
+    address ${requested_ip}
+    gateway ${requested_gateway}
+    dns-nameservers ${requested_dns}
+iface enp0s1 inet static
+    address ${requested_ip}
+    gateway ${requested_gateway}
+    dns-nameservers ${requested_dns}
+iface enp0s2 inet static
     address ${requested_ip}
     gateway ${requested_gateway}
     dns-nameservers ${requested_dns}
 EOF
         echo "[SUCCESS] Debian/Alpine network interfaces configuration injected."
-
+# --- ARCHITECTURE ENGINE C: NETWORKMANAGER KEYFILE (ENTERPRISE ROCKY/FEDORA RHEL CORE) ---
     elif [ -d "${mount_point}/etc/NetworkManager/system-connections" ]; then
-        echo "[*] Target layout detected: NetworkManager KeyFile (RHEL/Fedora style)"
+        echo "[*] Target layout detected: NetworkManager KeyFile (Generic Device Profile)"
+        local timestamp
+        timestamp=$(date +"%Y%m%d_%H%M%S")
+
+        # Back up and clear existing connection profiles to prevent overrides
+        for original_profile in "${mount_point}/etc/NetworkManager/system-connections/"*.nmconnection; do
+            if [ -f "$original_profile" ]; then
+                echo "[*] Backing up conflicting profile: $(basename "$original_profile")"
+                cp "$original_profile" "${original_profile}.bak_${timestamp}"
+            fi
+        done
+        rm -f "${mount_point}/etc/NetworkManager/system-connections/"*.nmconnection
+
+        # Generate a standard pseudo-random UUID for the connection profile
+        local connection_uuid
+        connection_uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "12345678-abcd-ef01-2345-6789abcdef01")
         
-        cat <<EOF > "${mount_point}/etc/NetworkManager/system-connections/eth0.nmconnection"
+        # Inject the optimized profile matching any available ethernet device
+        cat <<EOF > "${mount_point}/etc/NetworkManager/system-connections/lan-static.nmconnection"
 [connection]
-id=eth0
+id=lan-static
+uuid=${connection_uuid}
 type=ethernet
-interface-name=eth0
+match-device=type:ethernet
 
 [ethernet]
 
@@ -172,9 +256,36 @@ method=manual
 [ipv6]
 method=disabled
 EOF
-        chmod 600 "${mount_point}/etc/NetworkManager/system-connections/eth0.nmconnection"
+        chmod 600 "${mount_point}/etc/NetworkManager/system-connections/lan-static.nmconnection"
         echo "[SUCCESS] NetworkManager connection profile successfully generated."
 
+        # --- GUEST-SIDE BOOTSTRAP AUTOMATION (Fixes SELinux / Boot caching issues) ---
+        echo "[*] Injecting post-boot network initialization routine into guest..."
+        
+        # Ensure the legacy rc.local structure exists in RHEL/Rocky
+        mkdir -p "${mount_point}/etc/rc.d"
+        
+        # If rc.local doesn't exist, initialize it with a proper shebang
+        if [ ! -f "${mount_point}/etc/rc.d/rc.local" ]; then
+            echo "#!/bin/bash" > "${mount_point}/etc/rc.d/rc.local"
+        fi
+        
+        # Append the hot-reload sequence to execute automatically upon system systemd completion
+        cat <<EOF >> "${mount_point}/etc/rc.d/rc.local"
+
+# Auto-generated by vm-ctl: Force NetworkManager to pick up the offline connection profile
+(
+    sleep 2
+    /usr/bin/nmcli connection reload
+    /usr/bin/nmcli connection up lan-static
+) &
+EOF
+        # Make the rc.local script executable so systemd-rc-local.service runs it on boot
+        chmod +x "${mount_point}/etc/rc.d/rc.local"
+        
+        # Create a symlink at /etc/rc.local for standard compatibility
+        ln -sf /etc/rc.d/rc.local "${mount_point}/etc/rc.local"
+        echo "[SUCCESS] Guest boot trigger armed successfully."
     else
         echo "[WARN] Unsupported or unrecognized network management layout. Host file changes skipped."
         return 1
